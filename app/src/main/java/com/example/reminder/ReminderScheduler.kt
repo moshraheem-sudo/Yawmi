@@ -269,6 +269,77 @@ object ReminderScheduler {
         }
     }
 
+    /**
+     * Automatically synchronizes monthly commitments at the start of each new month (or scheduled due cycle):
+     * 1. Ensures any already-paid commitment has its payment timestamp & month recorded in paymentHistoryJson.
+     * 2. When a new month arrives, any recurring commitment (dueMonth == 0) that has not completed all its installments
+     *    automatically renews (isPaid = false) at the exact same scheduled time while preserving all previous paid months in history.
+     */
+    suspend fun syncMonthlyCommitments(
+        context: Context,
+        billDao: com.example.data.local.dao.BillDao
+    ) {
+        val currentMonthKey = com.example.data.local.entity.BillItem.currentMonthKey()
+        val allBills = billDao.getAllBillsSync()
+        for (bill in allBills) {
+            if (bill.isPaid && bill.paymentHistoryJson.isBlank()) {
+                // Backfill existing paid commitment so it appears in the monthly history log with date, time, and amount
+                val recorded = bill.withRecordedPayment(
+                    monthKey = bill.lastPaidMonthKey.ifBlank { currentMonthKey },
+                    timestamp = bill.lastPaidAt ?: bill.createdAt,
+                    paymentAmount = bill.amount
+                )
+                billDao.updateBill(recorded)
+            } else if (bill.isPaid && bill.dueMonth == 0 && bill.lastPaidMonthKey.isNotBlank() && bill.lastPaidMonthKey < currentMonthKey) {
+                // A new month has started! Automatically renew the commitment unless it is a completed installment
+                if (!bill.isInstallmentCompleted) {
+                    val nextReminderTime = computeNextMonthReminderTime(bill)
+                    val renewedBill = bill.copy(
+                        isPaid = false,
+                        reminderTime = if (bill.hasReminder) nextReminderTime else bill.reminderTime
+                    )
+                    billDao.updateBill(renewedBill)
+                    scheduleAdvanceBillDueAlarms(context, renewedBill)
+                    if (renewedBill.hasReminder && renewedBill.reminderTime != null) {
+                        scheduleBillReminder(context, renewedBill.id, renewedBill.title, renewedBill.reminderTime)
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Computes the next month's reminder timestamp preserving the user's exact scheduled hour and minute.
+     */
+    fun computeNextMonthReminderTime(bill: com.example.data.local.entity.BillItem): Long {
+        val nowCal = java.util.Calendar.getInstance()
+        val baseCal = java.util.Calendar.getInstance().apply {
+            if (bill.reminderTime != null) {
+                timeInMillis = bill.reminderTime
+            } else {
+                set(java.util.Calendar.HOUR_OF_DAY, 9)
+                set(java.util.Calendar.MINUTE, 0)
+            }
+        }
+        val targetHour = baseCal.get(java.util.Calendar.HOUR_OF_DAY)
+        val targetMinute = baseCal.get(java.util.Calendar.MINUTE)
+
+        val nextCal = java.util.Calendar.getInstance().apply {
+            set(java.util.Calendar.SECOND, 0)
+            set(java.util.Calendar.MILLISECOND, 0)
+            set(java.util.Calendar.HOUR_OF_DAY, targetHour)
+            set(java.util.Calendar.MINUTE, targetMinute)
+            val maxDay = getActualMaximum(java.util.Calendar.DAY_OF_MONTH)
+            set(java.util.Calendar.DAY_OF_MONTH, bill.dueDayOfMonth.coerceIn(1, maxDay))
+            if (timeInMillis <= nowCal.timeInMillis) {
+                add(java.util.Calendar.MONTH, 1)
+                val nextMax = getActualMaximum(java.util.Calendar.DAY_OF_MONTH)
+                set(java.util.Calendar.DAY_OF_MONTH, bill.dueDayOfMonth.coerceIn(1, nextMax))
+            }
+        }
+        return nextCal.timeInMillis
+    }
+
     fun computeNextDueDateCalendar(dueDayOfMonth: Int, dueMonth: Int): java.util.Calendar {
         val nowCal = java.util.Calendar.getInstance()
         val targetCal = java.util.Calendar.getInstance().apply {

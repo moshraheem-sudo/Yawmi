@@ -190,16 +190,24 @@ fun ExpensesScreen(
     var showAddBillDialog by remember { mutableStateOf(false) }
     var editingBill by remember { mutableStateOf<BillItem?>(null) }
     var billToDelete by remember { mutableStateOf<BillItem?>(null) }
+    var billForHistoryDialog by remember { mutableStateOf<BillItem?>(null) }
 
     // Calculations
     val basicSalary = preferences.basicSalary
     val addedSalary = preferences.addedSalary
     val previousBalance = preferences.previousMonthBalance
-    val totalIncome = basicSalary + addedSalary + previousBalance
 
-    // Expenses vs Income separation
-    val actualExpenses = remember(expenses) { expenses.filter { !it.isIncome } }
+    // Expenses vs Income separation (excluding any legacy auto-logged bill payment entries so commitments are never double-counted)
+    val actualExpenses = remember(expenses) {
+        expenses.filter { !it.isIncome && !it.note.startsWith("سداد فاتورة:") }
+    }
     val incomeTransactions = remember(expenses) { expenses.filter { it.isIncome } }
+    val extraIncomesTotal = remember(incomeTransactions) { incomeTransactions.sumOf { it.amount } }
+
+    // Total Added Salary + External Works / Extra Incomes
+    val effectiveAddedSalary = addedSalary + extraIncomesTotal
+    // Final Total Salary / Income (الراتب العام الأساسي + الإضافات من رواتب أو أعمال خارجية + الرصيد المرحّل)
+    val totalIncome = basicSalary + effectiveAddedSalary + previousBalance
 
     val (todayTotalExpenses, monthTotalExpenses) = remember(actualExpenses) {
         val cal = Calendar.getInstance()
@@ -224,39 +232,27 @@ fun ExpensesScreen(
         Pair(todaySum, monthSum)
     }
 
-    // Bills calculations
+    // Total extra expenses recorded outside commitments (نافذة المصروف)
+    val totalExtraExpenses = remember(actualExpenses) { actualExpenses.sumOf { it.amount } }
+
+    // Bills / Commitments calculations (الالتزامات)
     val unpaidBills = remember(bills) { bills.filter { !it.isPaid } }
+    val totalBillsAmount = remember(bills) { bills.sumOf { it.amount } }
+    val unpaidBillsTotal = remember(unpaidBills) { unpaidBills.sumOf { it.amount } }
     val reservedBillsTotal = remember(bills) { bills.filter { !it.isPaid && it.isReserved }.sumOf { it.amount } }
 
-    // Actual Current Balance (أموالك في الجيب والحساب)
-    val actualCurrentBalance = remember(totalIncome, monthTotalExpenses) {
-        totalIncome - monthTotalExpenses
+    // Grand Total of All Commitments + Extra Expenses (المجموع الكلي من مجموع الالتزامات كاملاً والصرف)
+    val grandTotalCommitmentsAndExpenses = remember(totalBillsAmount, totalExtraExpenses) {
+        totalBillsAmount + totalExtraExpenses
     }
 
-    // Available to spend after reserving unpaid commitments (المتاح للصرف بعد حجز الالتزامات)
-    val availableToSpend = remember(actualCurrentBalance, reservedBillsTotal) {
-        actualCurrentBalance - reservedBillsTotal
+    // Net Remaining Salary after deducting all Commitments + Extra Expenses from Final Total Salary
+    val actualCurrentBalance = remember(totalIncome, grandTotalCommitmentsAndExpenses) {
+        totalIncome - grandTotalCommitmentsAndExpenses
     }
 
-    // Days until next salary
-    val daysUntilSalary = remember(preferences.salaryDayOfMonth) {
-        val cal = Calendar.getInstance()
-        val currentDay = cal.get(Calendar.DAY_OF_MONTH)
-        val maxDaysInMonth = cal.getActualMaximum(Calendar.DAY_OF_MONTH)
-        val targetDay = preferences.salaryDayOfMonth.coerceIn(1, maxDaysInMonth)
-        if (targetDay >= currentDay) {
-            targetDay - currentDay
-        } else {
-            (maxDaysInMonth - currentDay) + targetDay
-        }
-    }
-
-    // Daily average spending this month
-    val dailyAverageSpending = remember(monthTotalExpenses) {
-        val cal = Calendar.getInstance()
-        val currentDay = cal.get(Calendar.DAY_OF_MONTH).coerceAtLeast(1)
-        monthTotalExpenses / currentDay
-    }
+    // Available to spend
+    val availableToSpend = actualCurrentBalance
 
     // Date header formatted
     val todayDateFormatted = remember {
@@ -400,16 +396,17 @@ fun ExpensesScreen(
                 FinanceTab.OVERVIEW -> {
                     OverviewTabContent(
                         basicSalary = basicSalary,
-                        addedSalary = addedSalary,
+                        addedSalary = effectiveAddedSalary,
                         previousBalance = previousBalance,
                         totalIncome = totalIncome,
+                        totalBillsAmount = totalBillsAmount,
+                        totalExtraExpenses = totalExtraExpenses,
+                        grandTotalCommitmentsAndExpenses = grandTotalCommitmentsAndExpenses,
                         monthTotalExpenses = monthTotalExpenses,
                         todayTotalExpenses = todayTotalExpenses,
                         actualCurrentBalance = actualCurrentBalance,
                         availableToSpend = availableToSpend,
-                        reservedBillsTotal = reservedBillsTotal,
-                        daysUntilSalary = daysUntilSalary,
-                        dailyAverageSpending = dailyAverageSpending,
+                        reservedBillsTotal = unpaidBillsTotal,
                         salaryDayOfMonth = preferences.salaryDayOfMonth,
                         bills = bills,
                         recentTransactions = expenses.take(10),
@@ -459,6 +456,9 @@ fun ExpensesScreen(
                     BillsTabContent(
                         bills = bills,
                         redExpenses = actualExpenses,
+                        basicSalary = basicSalary,
+                        addedSalary = effectiveAddedSalary + previousBalance,
+                        totalIncome = totalIncome,
                         initialShowRedExpenses = openRedExpensesInBillsTab,
                         currencyFormatter = currencyFormatter,
                         strings = strings,
@@ -476,6 +476,9 @@ fun ExpensesScreen(
                         },
                         onPayBill = onPayBill,
                         onUnpayBill = onUnpayBill,
+                        onOpenBillHistory = { bill ->
+                            billForHistoryDialog = bill
+                        },
                         onOpenAddRedExpense = {
                             editingExpense = null
                             showAddExpenseDialog = true
@@ -494,10 +497,11 @@ fun ExpensesScreen(
                 }
 
                 FinanceTab.HISTORY -> {
-                    HistoryTabContent(
+                    MonthlyHistoryTabContent(
+                        bills = bills,
                         expenses = actualExpenses,
                         incomes = incomeTransactions,
-                        monthTotal = monthTotalExpenses,
+                        totalIncome = totalIncome,
                         currencyFormatter = currencyFormatter,
                         strings = strings,
                         isAr = isAr,
@@ -525,7 +529,13 @@ fun ExpensesScreen(
                         },
                         onClearAllIncomes = {
                             showClearAllIncomesConfirm = true
-                        }
+                        },
+                        onPayBill = onPayBill,
+                        onEditBill = { bill ->
+                            editingBill = bill
+                            showAddBillDialog = true
+                        },
+                        onUpdateBill = onSaveBill
                     )
                 }
             }
@@ -535,6 +545,21 @@ fun ExpensesScreen(
     // -------------------------------------------------------------
     // DIALOGS
     // -------------------------------------------------------------
+
+    if (billForHistoryDialog != null) {
+        val currentBill = bills.firstOrNull { it.id == billForHistoryDialog?.id } ?: billForHistoryDialog!!
+        BillInstallmentHistoryDialog(
+            bill = currentBill,
+            currencyFormatter = currencyFormatter,
+            currencyUnit = strings.currencyUnit,
+            isAr = isAr,
+            onDismiss = { billForHistoryDialog = null },
+            onUpdateBill = { updated ->
+                onSaveBill(updated)
+                billForHistoryDialog = updated
+            }
+        )
+    }
 
     // 0. Dedicated Set New Salary Dialog (نافذة تحديد الراتب الجديد وتحديده)
     if (showSetNewSalaryDialog) {
@@ -747,13 +772,14 @@ private fun OverviewTabContent(
     addedSalary: Double,
     previousBalance: Double,
     totalIncome: Double,
+    totalBillsAmount: Double,
+    totalExtraExpenses: Double,
+    grandTotalCommitmentsAndExpenses: Double,
     monthTotalExpenses: Double,
     todayTotalExpenses: Double,
     actualCurrentBalance: Double,
     availableToSpend: Double,
     reservedBillsTotal: Double,
-    daysUntilSalary: Int,
-    dailyAverageSpending: Double,
     salaryDayOfMonth: Int,
     bills: List<BillItem>,
     recentTransactions: List<ExpenseItem>,
@@ -806,14 +832,14 @@ private fun OverviewTabContent(
                     ) {
                         Column {
                             Text(
-                                text = if (isAr) "الراتب الفعلي (إجمالي الراتب)" else "Actual Net Salary",
+                                text = if (isAr) "النهائي للراتب (إجمالي الراتب الكلي)" else "Final Total Salary",
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = CyanSkyPrimary
                             )
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                text = if (isAr) "الأساسي + المضاف لشهرك الحالي" else "Base + Added for current month",
+                                text = if (isAr) "الراتب الأساسي + المضاف والأعمال الخارجية" else "Base + Added & External Income",
                                 fontSize = 10.5.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -847,10 +873,10 @@ private fun OverviewTabContent(
 
                     // Price / Amount Value BELOW IT
                     Text(
-                        text = "${currencyFormatter.format(basicSalary + addedSalary)} ${strings.currencyUnit}",
+                        text = "${currencyFormatter.format(totalIncome)} ${strings.currencyUnit}",
                         fontSize = 24.sp,
                         fontWeight = FontWeight.Black,
-                        color = Color.White
+                        color = MaterialTheme.colorScheme.onSurface
                     )
 
                     Spacer(modifier = Modifier.height(10.dp))
@@ -891,7 +917,7 @@ private fun OverviewTabContent(
 
                             Column {
                                 Text(
-                                    text = if (isAr) "الراتب المضاف:" else "Added Salary:",
+                                    text = if (isAr) "المضاف / خارجي:" else "Added / External:",
                                     fontSize = 10.5.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -910,7 +936,9 @@ private fun OverviewTabContent(
                                     .background(MaterialTheme.colorScheme.outlineVariant)
                             )
 
-                            Column {
+                            Column(
+                                modifier = Modifier.clickable { onOpenEditSalaryDay() }
+                            ) {
                                 Text(
                                     text = if (isAr) "يوم النزول:" else "Deposit Day:",
                                     fontSize = 10.5.sp,
@@ -929,7 +957,7 @@ private fun OverviewTabContent(
             }
         }
 
-        // 1. HERO CARD: الرصيد الفعلي الحالي (أموالك في الجيب والحساب)
+        // 1. HERO CARD: الصافي المتبقي من الراتب (بعد طرح الالتزامات والمصروف)
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -946,7 +974,8 @@ private fun OverviewTabContent(
                 ) {
                     // Title on TOP
                     Text(
-                        text = strings.actualCurrentBalance,
+                        text = if (isAr) "الصافي المتبقي من الراتب (بعد طرح الالتزامات والمصروف)"
+                        else "Net Remaining Salary (After Commitments & Expenses)",
                         fontSize = 12.5.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = Color(0xFFD8F3DC)
@@ -956,19 +985,27 @@ private fun OverviewTabContent(
                     // Price / Amount Value BELOW IT
                     Text(
                         text = "${currencyFormatter.format(actualCurrentBalance)} ${strings.currencyUnit}",
-                        fontSize = 22.sp,
+                        fontSize = 23.sp,
                         fontWeight = FontWeight.Black,
                         color = Color.White
                     )
+                    if (actualCurrentBalance != 0.0) {
+                        Text(
+                            text = CurrencyFormatterUtils.toArabicDenomination(kotlin.math.abs(actualCurrentBalance.toLong())),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFB7E4C7)
+                        )
+                    }
 
                     Spacer(modifier = Modifier.height(14.dp))
 
-                    // Sub-boxes: المتاح للصرف (يمين) | التزامات محجوزة (يسار)
+                    // Sub-boxes: المجموع الكلي (التزامات + مصروف) | النهائي للراتب (مع الإضافات)
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        // Box A: المتاح للصرف
+                        // Box A: المجموع الكلي للالتزامات والمصروف
                         Surface(
                             modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(12.dp),
@@ -980,134 +1017,60 @@ private fun OverviewTabContent(
                                     .padding(horizontal = 12.dp, vertical = 10.dp)
                             ) {
                                 Text(
-                                    text = strings.availableToSpend,
-                                    fontSize = 11.5.sp,
+                                    text = if (isAr) "مجموع الالتزامات والمصروف" else "Commitments + Expenses",
+                                    fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = Color(0xFFD8F3DC)
                                 )
                                 Spacer(modifier = Modifier.height(3.dp))
                                 Text(
-                                    text = "${currencyFormatter.format(availableToSpend)} ${strings.currencyUnit}",
+                                    text = "${currencyFormatter.format(grandTotalCommitmentsAndExpenses)} ${strings.currencyUnit}",
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = Color(0xFFFFD166)
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = if (isAr) "التزامات: ${currencyFormatter.format(totalBillsAmount)} | مصروف: ${currencyFormatter.format(totalExtraExpenses)}"
+                                    else "Bills: ${currencyFormatter.format(totalBillsAmount)} + Exp: ${currencyFormatter.format(totalExtraExpenses)}",
+                                    fontSize = 9.5.sp,
+                                    color = Color(0xFFB7E4C7)
+                                )
+                            }
+                        }
+
+                        // Box B: النهائي للراتب بعد الإضافات
+                        Surface(
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(12.dp),
+                            color = Color(0xFF2D6A4F).copy(alpha = 0.85f)
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 10.dp)
+                            ) {
+                                Text(
+                                    text = if (isAr) "النهائي للراتب (مع الإضافات)" else "Final Total Salary",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFFD8F3DC)
+                                )
+                                Spacer(modifier = Modifier.height(3.dp))
+                                Text(
+                                    text = "${currencyFormatter.format(totalIncome)} ${strings.currencyUnit}",
                                     fontSize = 15.sp,
                                     fontWeight = FontWeight.ExtraBold,
                                     color = Color.White
                                 )
                                 Spacer(modifier = Modifier.height(2.dp))
                                 Text(
-                                    text = strings.afterReservedCommitments,
+                                    text = if (isAr) "الأساسي + المضاف وأعمال خارجية" else "Base + External Income",
                                     fontSize = 9.5.sp,
                                     color = Color(0xFFB7E4C7)
                                 )
                             }
                         }
-
-                        // Box B: التزامات محجوزة
-                        Surface(
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(12.dp),
-                            color = Color(0xFF2D6A4F).copy(alpha = 0.85f)
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 12.dp, vertical = 10.dp)
-                            ) {
-                                Text(
-                                    text = strings.reservedCommitments,
-                                    fontSize = 11.5.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color(0xFFD8F3DC)
-                                )
-                                Spacer(modifier = Modifier.height(3.dp))
-                                Text(
-                                    text = "${currencyFormatter.format(reservedBillsTotal)} ${strings.currencyUnit}",
-                                    fontSize = 15.sp,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    color = if (reservedBillsTotal > 0) Color(0xFFFFD166) else Color.White
-                                )
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Text(
-                                    text = strings.unpaidDues,
-                                    fontSize = 9.5.sp,
-                                    color = Color(0xFFB7E4C7)
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // 2. متبقي للراتب القادم & متوسط الصرف اليومي (Screenshot 2)
-        item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 12.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    // Right side: متبقي للراتب القادم
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clickable { onOpenEditSalaryDay() }
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text = strings.daysRemainingForSalary,
-                                fontSize = 11.5.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Icon(
-                                imageVector = Icons.Default.Edit,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(11.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(3.dp))
-                        Text(
-                            text = String.format(Locale.getDefault(), "%d %s", daysUntilSalary, if (isAr) "يوم" else "days"),
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = Color(0xFF10B981)
-                        )
-                    }
-
-                    // Divider
-                    Box(
-                        modifier = Modifier
-                            .width(1.dp)
-                            .height(36.dp)
-                            .background(MaterialTheme.colorScheme.outlineVariant)
-                    )
-
-                    // Left side: متوسط الصرف اليومي
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(start = 12.dp)
-                    ) {
-                        Text(
-                            text = strings.dailyAverageExpense,
-                            fontSize = 11.5.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(modifier = Modifier.height(3.dp))
-                        Text(
-                            text = "${currencyFormatter.format(dailyAverageSpending.toLong())} ${strings.currencyUnit}",
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
                     }
                 }
             }
@@ -1493,37 +1456,90 @@ private fun OverviewTabContent(
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = strings.financialAccountingSubtitle,
+                        text = if (isAr) "يجمع مجموع الالتزامات مع المصروف ويطرح دائماً من النهائي للراتب بعد الإضافة"
+                        else strings.financialAccountingSubtitle,
                         fontSize = 10.5.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
 
                     Spacer(modifier = Modifier.height(10.dp))
 
-                    // Row: Total Income
+                    // Row: Basic Salary
                     FinancialDetailRow(
-                        label = strings.totalIncomeTitle,
+                        label = if (isAr) "الراتب العام الأساسي:" else "Basic Salary:",
+                        value = "+${currencyFormatter.format(basicSalary)} ${strings.currencyUnit}",
+                        color = Color(0xFF60A5FA)
+                    )
+
+                    // Row: Added Salaries & External Work + Previous Balance
+                    FinancialDetailRow(
+                        label = if (isAr) "الرواتب والأعمال الإضافية (+ المرحّل):" else "Added Income & External Work:",
+                        value = "+${currencyFormatter.format(addedSalary + previousBalance)} ${strings.currencyUnit}",
+                        color = Color(0xFF10B981)
+                    )
+
+                    // Row: Total Final Income
+                    FinancialDetailRow(
+                        label = if (isAr) "النهائي للراتب بعد الإضافة:" else strings.totalIncomeTitle,
                         value = "+${currencyFormatter.format(totalIncome)} ${strings.currencyUnit}",
                         color = Color(0xFF10B981)
                     )
 
-                    // Row: Month Expenses Total
+                    // Row: Commitments Total
                     FinancialDetailRow(
-                        label = strings.monthTotalExpenses,
-                        value = "-${currencyFormatter.format(monthTotalExpenses)} ${strings.currencyUnit}",
+                        label = if (isAr) "مجموع الالتزامات كاملاً (${bills.size}):" else "Total Commitments (${bills.size}):",
+                        value = "-${currencyFormatter.format(totalBillsAmount)} ${strings.currencyUnit}",
+                        color = Color(0xFFF59E0B)
+                    )
+
+                    // Row: Extra Expenses Outside Commitments
+                    FinancialDetailRow(
+                        label = if (isAr) "مجموع نافذة المصروف (خارج الالتزامات):" else "Extra Expenses Window:",
+                        value = "-${currencyFormatter.format(totalExtraExpenses)} ${strings.currencyUnit}",
                         color = Color(0xFFEF4444)
                     )
 
-                    // Row: Today's Expenses
+                    // Row: Combined Grand Total of Commitments + Extra Expenses
                     FinancialDetailRow(
-                        label = strings.todayTotalExpenses,
-                        value = "${currencyFormatter.format(todayTotalExpenses)} ${strings.currencyUnit}",
-                        color = MaterialTheme.colorScheme.onSurface
+                        label = if (isAr) "المجموع الكلي (الالتزامات + المصروف):" else "Grand Total (Commitments + Expenses):",
+                        value = "-${currencyFormatter.format(grandTotalCommitmentsAndExpenses)} ${strings.currencyUnit}",
+                        color = Color(0xFFEF4444)
                     )
+
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    // Highlighted Net Remaining Row
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = Color(0xFF10B981).copy(alpha = 0.14f),
+                        border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.4f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 9.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = if (isAr) "الصافي المتبقي من الراتب النهائي:" else "Net Remaining Salary:",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "${currencyFormatter.format(actualCurrentBalance)} ${strings.currencyUnit}",
+                                fontSize = 13.5.sp,
+                                fontWeight = FontWeight.Black,
+                                color = if (actualCurrentBalance >= 0) Color(0xFF10B981) else Color(0xFFEF4444)
+                            )
+                        }
+                    }
 
                     // Progress indicator for income consumed
                     if (totalIncome > 0) {
-                        val ratio = (monthTotalExpenses / totalIncome).toFloat().coerceIn(0f, 1f)
+                        val ratio = (grandTotalCommitmentsAndExpenses / totalIncome).toFloat().coerceIn(0f, 1f)
                         Spacer(modifier = Modifier.height(8.dp))
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -1719,6 +1735,9 @@ private fun OverviewTabContent(
 private fun BillsTabContent(
     bills: List<BillItem>,
     redExpenses: List<ExpenseItem>,
+    basicSalary: Double = 0.0,
+    addedSalary: Double = 0.0,
+    totalIncome: Double = 0.0,
     initialShowRedExpenses: Boolean = false,
     currencyFormatter: DecimalFormat,
     strings: AppStrings,
@@ -1728,6 +1747,7 @@ private fun BillsTabContent(
     onDeleteBill: (BillItem) -> Unit,
     onPayBill: (BillItem) -> Unit,
     onUnpayBill: (BillItem) -> Unit = {},
+    onOpenBillHistory: (BillItem) -> Unit = {},
     onOpenAddRedExpense: () -> Unit,
     onEditRedExpense: (ExpenseItem) -> Unit,
     onDeleteRedExpense: (ExpenseItem) -> Unit,
@@ -1748,6 +1768,15 @@ private fun BillsTabContent(
     val remindersCount = remember(bills) { bills.count { it.hasReminder && !it.isPaid } }
 
     val totalRedExpensesAmount = remember(redExpenses) { redExpenses.sumOf { it.amount } }
+    // المجموع الكلي النهائي (مجموع الالتزامات كاملاً + مجموع المصروف خارج الالتزامات)
+    val combinedGrandTotal = remember(totalBillsAmount, totalRedExpensesAmount) {
+        totalBillsAmount + totalRedExpensesAmount
+    }
+    // الصافي المتبقي دائماً بعد طرح (الالتزامات + المصروف) من النهائي للراتب بعد الإضافة
+    val netRemainingSalary = remember(totalIncome, combinedGrandTotal) {
+        totalIncome - combinedGrandTotal
+    }
+
     val filteredRedExpenses = remember(redExpenses, redExpenseSearchQuery) {
         if (redExpenseSearchQuery.isBlank()) redExpenses
         else redExpenses.filter {
@@ -1863,8 +1892,92 @@ private fun BillsTabContent(
 
         if (activeCommitmentsSection == 1) {
             // =========================================================================
-            // نافذة المصروفات الخاصة بالزر الأحمر (- مصروف) للتعديل والحذف ومسح السجل
+            // نافذة المصروفات الخاصة بالزر الأحمر (- مصروف) + بطاقة الالتزامات والمجموع الكلي والراتب
             // =========================================================================
+
+            // 1. بطاقتا (مجموع الالتزامات كاملاً) و (مجموع نافذة المصروف خارج الالتزامات) جنباً إلى جنب
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    // بطاقة مجموع الالتزامات
+                    Card(
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF0F2942)),
+                        border = BorderStroke(1.2.dp, CyanSkyPrimary.copy(alpha = 0.5f)),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp)
+                        ) {
+                            Text(
+                                text = if (isAr) "مجموع الالتزامات" else "Total Commitments",
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = CyanSkyPrimary
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "${currencyFormatter.format(totalBillsAmount)} ${strings.currencyUnit}",
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Black,
+                                color = Color.White,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = if (isAr) "إجمالي ${bills.size} التزام" else "${bills.size} commitments",
+                                fontSize = 10.sp,
+                                color = Color(0xFF93C5FD)
+                            )
+                        }
+                    }
+
+                    // بطاقة مجموع المصروف خارج الالتزامات
+                    Card(
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF3B1219)),
+                        border = BorderStroke(1.2.dp, Color(0xFFDC2626).copy(alpha = 0.65f)),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp)
+                        ) {
+                            Text(
+                                text = if (isAr) "مجموع نافذة المصروف" else "Extra Expenses Total",
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFFCA5A5)
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "${currencyFormatter.format(totalRedExpensesAmount)} ${strings.currencyUnit}",
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Black,
+                                color = Color.White,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = if (isAr) "${redExpenses.size} مصروف خارج الالتزامات" else "${redExpenses.size} extra expenses",
+                                fontSize = 10.sp,
+                                color = Color(0xFFFECACA)
+                            )
+                        }
+                    }
+                }
+            }
+
+            // 2. البطاقة الرئيسية لنافذة المصروف + المجموع الكلي (الالتزامات + المصروف) والطرح من الراتب النهائي
             item {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -1901,14 +2014,14 @@ private fun BillsTabContent(
                                 Spacer(modifier = Modifier.width(10.dp))
                                 Column {
                                     Text(
-                                        text = if (isAr) "نافذة المصروفات" else "Expenses Window",
+                                        text = if (isAr) "نافذة المصروف والمجموع الكلي" else "Expenses & Grand Total",
                                         fontSize = 14.sp,
                                         fontWeight = FontWeight.ExtraBold,
                                         color = Color.White
                                     )
                                     Text(
-                                        text = if (isAr) "إدارة وتعديل وحذف المصروفات المسجلة" else "Manage, edit, and delete recorded expenses",
-                                        fontSize = 11.sp,
+                                        text = if (isAr) "تجمع مع الالتزامات وتطرح دائماً من النهائي للراتب" else "Summed with commitments & deducted from final salary",
+                                        fontSize = 10.5.sp,
                                         color = Color(0xFFFCA5A5)
                                     )
                                 }
@@ -1930,24 +2043,124 @@ private fun BillsTabContent(
 
                         Spacer(modifier = Modifier.height(12.dp))
 
-                        Text(
-                            text = if (isAr) "إجمالي المصروفات المسجلة:" else "Total Recorded Expenses:",
-                            fontSize = 11.5.sp,
-                            color = Color(0xFFFCA5A5)
-                        )
-                        Text(
-                            text = "${currencyFormatter.format(totalRedExpensesAmount)} ${strings.currencyUnit}",
-                            fontSize = 22.sp,
-                            fontWeight = FontWeight.Black,
-                            color = Color.White
-                        )
-                        if (totalRedExpensesAmount > 0) {
-                            Text(
-                                text = CurrencyFormatterUtils.toArabicDenomination(totalRedExpensesAmount.toLong()),
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color(0xFFFCA5A5)
-                            )
+                        // جدول الحساب الموحد داخل نافذة المصروف
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = Color.Black.copy(alpha = 0.28f),
+                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = if (isAr) "مجموع الالتزامات كاملاً (${bills.size}):" else "Total Commitments:",
+                                        fontSize = 11.5.sp,
+                                        color = Color(0xFFCBD5E1)
+                                    )
+                                    Text(
+                                        text = "${currencyFormatter.format(totalBillsAmount)} ${strings.currencyUnit}",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF93C5FD)
+                                    )
+                                }
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = if (isAr) "+ مجموع المصروف خارج الالتزامات (${redExpenses.size}):" else "+ Extra Expenses:",
+                                        fontSize = 11.5.sp,
+                                        color = Color(0xFFCBD5E1)
+                                    )
+                                    Text(
+                                        text = "${currencyFormatter.format(totalRedExpensesAmount)} ${strings.currencyUnit}",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFFFCA5A5)
+                                    )
+                                }
+
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(1.dp)
+                                        .background(Color.White.copy(alpha = 0.15f))
+                                )
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = if (isAr) "= المجموع الكلي (الالتزامات + المصروف):" else "= Combined Grand Total:",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = Color(0xFFFFD166)
+                                    )
+                                    Text(
+                                        text = "-${currencyFormatter.format(combinedGrandTotal)} ${strings.currencyUnit}",
+                                        fontSize = 14.5.sp,
+                                        fontWeight = FontWeight.Black,
+                                        color = Color(0xFFFFD166)
+                                    )
+                                }
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = if (isAr) "النهائي للراتب (الأساسي + الإضافات):" else "Final Total Salary:",
+                                        fontSize = 11.5.sp,
+                                        color = Color(0xFFCBD5E1)
+                                    )
+                                    Text(
+                                        text = "+${currencyFormatter.format(totalIncome)} ${strings.currencyUnit}",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF34D399)
+                                    )
+                                }
+
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = Color(0xFF10B981).copy(alpha = 0.2f),
+                                    border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.5f)),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = if (isAr) "الصافي المتبقي من الراتب النهائي:" else "Net Remaining Salary:",
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = Color.White
+                                        )
+                                        Text(
+                                            text = "${currencyFormatter.format(netRemainingSalary)} ${strings.currencyUnit}",
+                                            fontSize = 15.sp,
+                                            fontWeight = FontWeight.Black,
+                                            color = if (netRemainingSalary >= 0) Color(0xFF34D399) else Color(0xFFF87171)
+                                        )
+                                    }
+                                }
+                            }
                         }
 
                         Spacer(modifier = Modifier.height(12.dp))
@@ -2041,7 +2254,7 @@ private fun BillsTabContent(
                 item {
                     EmptyState(
                         title = if (isAr) "لا توجد مصروفات مسجلة حالياً" else "No recorded expenses",
-                        subtitle = if (isAr) "أي مصروف تضيفه في الرئيسية يظهر هنا لتتمكن من تعديله أو حذفه في أي وقت" else "Recorded expenses appear here for editing or deletion",
+                        subtitle = if (isAr) "أي مصروف تضيفه خارج الالتزامات يظهر هنا ويجمع تلقائياً مع الالتزامات ويطرح من الراتب النهائي" else "Recorded expenses appear here and are deducted with commitments from final salary",
                         icon = Icons.Default.ReceiptLong
                     )
                 }
@@ -2058,17 +2271,146 @@ private fun BillsTabContent(
                     )
                 }
             }
+
+            // الخلاصة النهائية في نهاية نافذة المصروف (تجمع الالتزامات والمصروف وتطرح دائماً من النهائي للراتب)
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1B4332)),
+                    border = BorderStroke(1.2.dp, Color(0xFF10B981).copy(alpha = 0.6f)),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 3.dp)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = if (isAr) "الخلاصة النهائية (مجموع الالتزامات + المصروف من الراتب الكلي)"
+                            else "Final Summary (Commitments + Expenses Deducted from Total Salary)",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = Color(0xFFD8F3DC)
+                        )
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = if (isAr) "مجموع الالتزامات كاملاً:" else "Total Commitments:",
+                                fontSize = 12.sp,
+                                color = Color(0xFFB7E4C7)
+                            )
+                            Text(
+                                text = "${currencyFormatter.format(totalBillsAmount)} ${strings.currencyUnit}",
+                                fontSize = 12.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = if (isAr) "+ مجموع نافذة المصروف (خارج الالتزامات):" else "+ Extra Expenses Window:",
+                                fontSize = 12.sp,
+                                color = Color(0xFFB7E4C7)
+                            )
+                            Text(
+                                text = "${currencyFormatter.format(totalRedExpensesAmount)} ${strings.currencyUnit}",
+                                fontSize = 12.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFFCA5A5)
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = if (isAr) "= المجموع الكلي (الالتزامات + المصروف):" else "= Combined Grand Total:",
+                                fontSize = 12.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFFFD166)
+                            )
+                            Text(
+                                text = "-${currencyFormatter.format(combinedGrandTotal)} ${strings.currencyUnit}",
+                                fontSize = 13.5.sp,
+                                fontWeight = FontWeight.Black,
+                                color = Color(0xFFFFD166)
+                            )
+                        }
+
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(1.dp)
+                                .background(Color.White.copy(alpha = 0.2f))
+                        )
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = if (isAr) "النهائي للراتب (الأساسي + الرواتب والأعمال الإضافية):" else "Final Total Salary:",
+                                fontSize = 12.sp,
+                                color = Color(0xFFB7E4C7)
+                            )
+                            Text(
+                                text = "+${currencyFormatter.format(totalIncome)} ${strings.currencyUnit}",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = Color(0xFF2D6A4F),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = if (isAr) "الصافي المتبقي من الراتب النهائي:" else "Net Remaining Salary:",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = Color.White
+                                )
+                                Text(
+                                    text = "${currencyFormatter.format(netRemainingSalary)} ${strings.currencyUnit}",
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.Black,
+                                    color = if (netRemainingSalary >= 0) Color(0xFF6EE7B7) else Color(0xFFF87171)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         } else {
             // =========================================================================
-            // نافذة الالتزامات والفواتير + بطاقة نافذة المصروف الأحمر السريعة في الأعلى
+            // نافذة الالتزامات والفواتير + بطاقة نافذة المصروف الأحمر السريعة + المجموع الكلي والراتب
             // =========================================================================
-            // 1. TOP SUMMARY CARDS: بطاقة المجموع الكلي وبطاقة الغير مسدد (USER REQUIREMENT)
+            // 1. TOP SUMMARY CARDS: بطاقة المجموع الكلي (الالتزامات + المصروف) وبطاقة الغير مسدد
             item {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    // Card A: بطاقة المجموع الكلي للالتزامات
+                    // Card A: بطاقة المجموع الكلي (الالتزامات + المصروف)
                     Card(
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(18.dp),
@@ -2089,7 +2431,7 @@ private fun BillsTabContent(
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Text(
-                                    text = if (isAr) "المجموع الكلي" else "Total Commitments",
+                                    text = if (isAr) "المجموع الكلي" else "Combined Total",
                                     fontSize = 12.5.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = CyanSkyPrimary
@@ -2113,7 +2455,7 @@ private fun BillsTabContent(
                             Spacer(modifier = Modifier.height(8.dp))
 
                             Text(
-                                text = "${currencyFormatter.format(totalBillsAmount)} ${strings.currencyUnit}",
+                                text = "${currencyFormatter.format(combinedGrandTotal)} ${strings.currencyUnit}",
                                 fontSize = 18.sp,
                                 fontWeight = FontWeight.Black,
                                 color = Color.White,
@@ -2121,9 +2463,9 @@ private fun BillsTabContent(
                                 overflow = TextOverflow.Ellipsis
                             )
 
-                            if (totalBillsAmount > 0) {
+                            if (combinedGrandTotal > 0) {
                                 Text(
-                                    text = CurrencyFormatterUtils.toArabicDenomination(totalBillsAmount.toLong()),
+                                    text = CurrencyFormatterUtils.toArabicDenomination(combinedGrandTotal.toLong()),
                                     fontSize = 10.5.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = Color(0xFF93C5FD),
@@ -2139,11 +2481,13 @@ private fun BillsTabContent(
                                 color = Color.White.copy(alpha = 0.08f)
                             ) {
                                 Text(
-                                    text = if (isAr) "إجمالي ${bills.size} التزام (${paidBillsList.size} مسددة)"
-                                    else "${bills.size} total (${paidBillsList.size} paid)",
-                                    fontSize = 10.sp,
+                                    text = if (isAr) "التزامات: ${currencyFormatter.format(totalBillsAmount)} + مصروف: ${currencyFormatter.format(totalRedExpensesAmount)}"
+                                    else "Bills: ${currencyFormatter.format(totalBillsAmount)} + Exp: ${currencyFormatter.format(totalRedExpensesAmount)}",
+                                    fontSize = 9.5.sp,
                                     color = Color(0xFFCBD5E1),
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                         }
@@ -2220,11 +2564,93 @@ private fun BillsTabContent(
                                 color = Color.White.copy(alpha = 0.08f)
                             ) {
                                 Text(
-                                    text = if (isAr) "${unpaidBillsList.size} التزام غير مسدد"
-                                    else "${unpaidBillsList.size} unpaid",
+                                    text = if (isAr) "${unpaidBillsList.size} غير مسدد (${paidBillsList.size} مسددة)"
+                                    else "${unpaidBillsList.size} unpaid (${paidBillsList.size} paid)",
                                     fontSize = 10.sp,
                                     color = Color(0xFFFECACA),
                                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 1.25 بطاقة خلاصة الراتب النهائي بعد جمع وطرح الالتزامات والمصروف
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1B4332)),
+                    border = BorderStroke(1.2.dp, Color(0xFF10B981).copy(alpha = 0.55f)),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = if (isAr) "النهائي للراتب (الأساسي + الإضافات):" else "Final Total Salary:",
+                                fontSize = 11.5.sp,
+                                color = Color(0xFFD8F3DC)
+                            )
+                            Text(
+                                text = "${currencyFormatter.format(totalIncome)} ${strings.currencyUnit}",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = if (isAr) "مجموع الالتزامات (${currencyFormatter.format(totalBillsAmount)}) + المصروف (${currencyFormatter.format(totalRedExpensesAmount)}):"
+                                else "Commitments + Extra Expenses:",
+                                fontSize = 11.sp,
+                                color = Color(0xFFB7E4C7)
+                            )
+                            Text(
+                                text = "-${currencyFormatter.format(combinedGrandTotal)} ${strings.currencyUnit}",
+                                fontSize = 12.5.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = Color(0xFFFFD166)
+                            )
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = Color(0xFF2D6A4F),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = if (isAr) "الصافي المتبقي من الراتب النهائي:" else "Net Remaining Salary:",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = Color.White
+                                )
+                                Text(
+                                    text = "${currencyFormatter.format(netRemainingSalary)} ${strings.currencyUnit}",
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Black,
+                                    color = if (netRemainingSalary >= 0) Color(0xFF6EE7B7) else Color(0xFFF87171)
                                 )
                             }
                         }
@@ -2516,7 +2942,8 @@ private fun BillsTabContent(
                         onEdit = { onEditBill(bill) },
                         onDelete = { onDeleteBill(bill) },
                         onPay = { onPayBill(bill) },
-                        onUnpay = { onUnpayBill(bill) }
+                        onUnpay = { onUnpayBill(bill) },
+                        onOpenHistory = { onOpenBillHistory(bill) }
                     )
                 }
             }
@@ -2533,7 +2960,8 @@ private fun BillCardItem(
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     onPay: () -> Unit,
-    onUnpay: () -> Unit = {}
+    onUnpay: () -> Unit = {},
+    onOpenHistory: () -> Unit = {}
 ) {
     val cal = Calendar.getInstance()
     val currentDay = cal.get(Calendar.DAY_OF_MONTH)
@@ -2715,7 +3143,7 @@ private fun BillCardItem(
 
             // Amount Section (Title on TOP, Value BELOW IT)
             Text(
-                text = if (isAr) "المبلغ المطلوب:" else "Required Amount:",
+                text = if (isAr) "المبلغ المطلوب شهرياً:" else "Monthly Required Amount:",
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -2725,6 +3153,17 @@ private fun BillCardItem(
                 fontSize = 17.sp,
                 fontWeight = FontWeight.ExtraBold,
                 color = MaterialTheme.colorScheme.onSurface
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // شارة التحديث الشهري التلقائي + متابعة الأقساط والأشهر المسلمة والمتبقية
+            BillInstallmentAndRenewalSection(
+                bill = bill,
+                currencyFormatter = currencyFormatter,
+                currencyUnit = strings.currencyUnit,
+                isAr = isAr,
+                onOpenHistoryDialog = onOpenHistory
             )
 
             Spacer(modifier = Modifier.height(10.dp))
@@ -3743,6 +4182,20 @@ private fun BillInputDialog(
 ) {
     var title by remember { mutableStateOf(initialBill?.title ?: "") }
     var amountText by remember { mutableStateOf(if (initialBill != null) initialBill.amount.toLong().toString() else "") }
+    var totalInstallmentText by remember {
+        mutableStateOf(
+            if (initialBill != null && initialBill.totalInstallmentAmount > 0) {
+                initialBill.totalInstallmentAmount.toLong().toString()
+            } else ""
+        )
+    }
+    var paidMonthsText by remember {
+        mutableStateOf(
+            if (initialBill != null && initialBill.effectivePaidMonthsCount > 0) {
+                initialBill.effectivePaidMonthsCount.toString()
+            } else ""
+        )
+    }
     var category by remember { mutableStateOf(initialBill?.category ?: (if (isAr) "مصروف بيت" else "Household")) }
     var dueDay by remember { mutableIntStateOf(initialBill?.dueDayOfMonth ?: 1) }
     var dueMonth by remember { mutableIntStateOf(initialBill?.dueMonth ?: 0) }
@@ -3781,6 +4234,8 @@ private fun BillInputDialog(
     var showReminderTimePicker by remember { mutableStateOf(false) }
 
     val parsedAmount = amountText.toLongOrNull() ?: 0L
+    val parsedTotalInstallment = totalInstallmentText.toLongOrNull() ?: 0L
+    val parsedPaidMonthsInput = paidMonthsText.toIntOrNull() ?: 0
 
     // Expanded categories requested by the user (including أجور دراسة)
     val categories = if (isAr) {
@@ -3925,6 +4380,109 @@ private fun BillInputDialog(
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.primary
                             )
+                        }
+                    }
+                }
+
+                // 0.5 نظام الأقساط والمبلغ الكلي (اختياري - مثل أقساط سبلت 1,300,000 د.ع وكل شهر 100,000 د.ع)
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color(0xFF0F2942).copy(alpha = 0.65f),
+                    border = BorderStroke(1.dp, CyanSkyPrimary.copy(alpha = 0.5f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = if (isAr) "نظام الأقساط والمبلغ الكلي (اختياري - مثل أقساط سبلت):"
+                            else "Installment Total Tracking (Optional):",
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = CyanSkyPrimary
+                        )
+
+                        OutlinedTextField(
+                            value = totalInstallmentText,
+                            onValueChange = { input -> totalInstallmentText = input.filter { it.isDigit() } },
+                            visualTransformation = ThousandsSeparatorVisualTransformation(),
+                            label = {
+                                Text(
+                                    if (isAr) "المبلغ الكلي للأقساط ($currency) - مثال: 1,300,000"
+                                    else "Total Installment Amount ($currency)",
+                                    fontSize = 10.5.sp
+                                )
+                            },
+                            placeholder = {
+                                Text(
+                                    if (isAr) "اتركه فارغاً إذا كان التزاماً شهرياً عادياً"
+                                    else "Leave empty if regular monthly bill",
+                                    fontSize = 10.5.sp
+                                )
+                            },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        OutlinedTextField(
+                            value = paidMonthsText,
+                            onValueChange = { input -> paidMonthsText = input.filter { it.isDigit() } },
+                            label = {
+                                Text(
+                                    if (isAr) "عدد الأشهر المسلمة حتى الآن (اختياري)"
+                                    else "Number of Months Already Paid (Optional)",
+                                    fontSize = 10.5.sp
+                                )
+                            },
+                            placeholder = { Text("0", fontSize = 11.sp) },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        if (parsedTotalInstallment > 0 && parsedAmount > 0) {
+                            val totalMos = kotlin.math.ceil(parsedTotalInstallment.toDouble() / parsedAmount.toDouble()).toInt().coerceAtLeast(1)
+                            val effectivePaidMos = maxOf(parsedPaidMonthsInput, if (isPaid) 1 else 0)
+                            val paidSum = (effectivePaidMos * parsedAmount).coerceAtMost(parsedTotalInstallment)
+                            val remSum = (parsedTotalInstallment - paidSum).coerceAtLeast(0L)
+                            val remMos = kotlin.math.ceil(remSum.toDouble() / parsedAmount.toDouble()).toInt().coerceAtLeast(0)
+
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = Color.Black.copy(alpha = 0.25f),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                                ) {
+                                    Text(
+                                        text = if (isAr) "• إجمالي عدد الأشهر الكلي: $totalMos شهر"
+                                        else "• Total Installment Months: $totalMos months",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.White
+                                    )
+                                    Text(
+                                        text = if (isAr) "• الأشهر المسلمة: $effectivePaidMos شهر (${CurrencyFormatterUtils.format(paidSum)} $currency)"
+                                        else "• Paid Months: $effectivePaidMos mos (${CurrencyFormatterUtils.format(paidSum)} $currency)",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF34D399)
+                                    )
+                                    Text(
+                                        text = if (isAr) "• المتبقي: $remMos شهر (${CurrencyFormatterUtils.format(remSum)} $currency)"
+                                        else "• Remaining: $remMos mos (${CurrencyFormatterUtils.format(remSum)} $currency)",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFFFFD166)
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -4370,6 +4928,18 @@ private fun BillInputDialog(
                         } else {
                             if (isAr) "شهرية" else "Monthly"
                         }
+                        val existingHistory = initialBill?.parsePaymentHistory().orEmpty()
+                        val builtHistory = BillItem.buildInitialInstallmentHistory(
+                            initialPaidMonths = parsedPaidMonthsInput,
+                            monthlyAmount = parsedAmount.toDouble(),
+                            isPaidCurrentMonth = isPaid,
+                            existingHistory = existingHistory
+                        )
+                        val historyJson = BillItem.encodePaymentHistory(builtHistory)
+                        val paidCount = builtHistory.size
+                        val paidSum = builtHistory.sumOf { it.amount }
+                        val lastRec = builtHistory.lastOrNull()
+
                         onSave(
                             initialBill?.copy(
                                 title = title.trim(),
@@ -4382,7 +4952,13 @@ private fun BillInputDialog(
                                 isPaid = isPaid,
                                 isReserved = isReserved,
                                 hasReminder = hasReminder,
-                                reminderTime = if (hasReminder) reminderTimeMillis else null
+                                reminderTime = if (hasReminder) reminderTimeMillis else null,
+                                totalInstallmentAmount = parsedTotalInstallment.toDouble(),
+                                paidInstallmentAmount = paidSum,
+                                paidMonthsCount = paidCount,
+                                lastPaidAt = lastRec?.timestamp ?: initialBill.lastPaidAt,
+                                lastPaidMonthKey = lastRec?.monthKey ?: initialBill.lastPaidMonthKey,
+                                paymentHistoryJson = historyJson
                             ) ?: BillItem(
                                 title = title.trim(),
                                 amount = parsedAmount.toDouble(),
@@ -4394,7 +4970,13 @@ private fun BillInputDialog(
                                 isPaid = isPaid,
                                 isReserved = isReserved,
                                 hasReminder = hasReminder,
-                                reminderTime = if (hasReminder) reminderTimeMillis else null
+                                reminderTime = if (hasReminder) reminderTimeMillis else null,
+                                totalInstallmentAmount = parsedTotalInstallment.toDouble(),
+                                paidInstallmentAmount = paidSum,
+                                paidMonthsCount = paidCount,
+                                lastPaidAt = lastRec?.timestamp,
+                                lastPaidMonthKey = lastRec?.monthKey ?: "",
+                                paymentHistoryJson = historyJson
                             )
                         )
                     }

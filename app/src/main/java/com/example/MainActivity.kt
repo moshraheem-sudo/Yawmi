@@ -227,6 +227,7 @@ fun YawmiMainApp(
                     HomeScreen(
                         tasks = allTasks,
                         expenses = allExpenses,
+                        bills = allBills,
                         upcomingReminders = upcomingReminders,
                         currentLanguage = preferences.language,
                         preferences = preferences,

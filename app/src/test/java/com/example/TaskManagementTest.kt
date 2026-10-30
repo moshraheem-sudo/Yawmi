@@ -23,7 +23,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34])
+@Config(sdk = [36])
 class TaskManagementTest {
 
     private lateinit var database: YawmiDatabase
@@ -101,5 +101,44 @@ class TaskManagementTest {
         val end = now + 10000
         val total = database.expenseDao().getTotalExpensesBetweenDates(start, end).first()
         assertEquals(40000.0, total, 0.01)
+    }
+
+    @Test
+    fun testInstallmentTrackingAndMonthlyRenewal() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        // Example from user: أقساط سبلت 1,300,000 د.ع، كل شهر 100,000 د.ع
+        val splitBill = com.example.data.local.entity.BillItem(
+            title = "أقساط سبلت",
+            amount = 100000.0,
+            category = "أقساط",
+            dueDayOfMonth = 15,
+            dueMonth = 0,
+            totalInstallmentAmount = 1300000.0,
+            isPaid = false
+        )
+        assertEquals(13, splitBill.totalInstallmentMonths)
+        assertEquals(13, splitBill.remainingInstallmentMonths)
+        assertEquals(1300000.0, splitBill.remainingInstallmentAmount, 0.01)
+
+        // Record payment for previous month (e.g., 2026-09)
+        val paidSept = splitBill.withRecordedPayment(
+            monthKey = "2026-09",
+            timestamp = 1726390000000L,
+            paymentAmount = 100000.0
+        )
+        val id = database.billDao().insertBill(paidSept)
+        val savedSept = database.billDao().getBillByIdSync(id)!!
+        assertEquals(1, savedSept.effectivePaidMonthsCount)
+        assertEquals(100000.0, savedSept.effectivePaidAmount, 0.01)
+        assertEquals(1200000.0, savedSept.remainingInstallmentAmount, 0.01)
+        assertEquals(12, savedSept.remainingInstallmentMonths)
+
+        // Sync monthly commitments for current month -> should automatically renew isPaid = false while keeping 1 paid month in history!
+        com.example.reminder.ReminderScheduler.syncMonthlyCommitments(context, database.billDao())
+        val renewedForNewMonth = database.billDao().getBillByIdSync(id)!!
+        assertEquals(false, renewedForNewMonth.isPaid)
+        assertEquals(1, renewedForNewMonth.effectivePaidMonthsCount)
+        assertEquals(12, renewedForNewMonth.remainingInstallmentMonths)
+        assertEquals(1200000.0, renewedForNewMonth.remainingInstallmentAmount, 0.01)
     }
 }

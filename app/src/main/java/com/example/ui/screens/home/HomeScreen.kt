@@ -75,6 +75,7 @@ import java.util.Locale
 fun HomeScreen(
     tasks: List<TaskItem>,
     expenses: List<ExpenseItem>,
+    bills: List<com.example.data.local.entity.BillItem> = emptyList(),
     upcomingReminders: List<TaskItem>,
     currentLanguage: String,
     preferences: UserPreferences? = null,
@@ -123,8 +124,20 @@ fun HomeScreen(
     val remainingCount = totalTodayTasks - completedCount
     val progressFraction = if (totalTodayTasks > 0) completedCount.toFloat() / totalTodayTasks else 0f
 
-    // Calculate today's and month's total expenses in IQD
-    val (todayExpensesTotal, monthExpensesTotal) = remember(expenses, startOfToday, endOfToday) {
+    // Calculate today's and month's total expenses in IQD (excluding income entries and legacy bill auto-logs)
+    val extraExpensesOnly = remember(expenses) {
+        expenses.filter { !it.isIncome && !it.note.startsWith("سداد فاتورة:") }
+    }
+    val extraIncomesTotal = remember(expenses) {
+        expenses.filter { it.isIncome }.sumOf { it.amount }
+    }
+    val totalBillsAmount = remember(bills) {
+        bills.sumOf { it.amount }
+    }
+    val totalExtraExpensesAmount = remember(extraExpensesOnly) {
+        extraExpensesOnly.sumOf { it.amount }
+    }
+    val (todayExpensesTotal, monthExpensesTotal) = remember(extraExpensesOnly, startOfToday, endOfToday) {
         val cal = Calendar.getInstance().apply {
             set(Calendar.DAY_OF_MONTH, 1)
             set(Calendar.HOUR_OF_DAY, 0)
@@ -133,8 +146,8 @@ fun HomeScreen(
             set(Calendar.MILLISECOND, 0)
         }
         val startOfMonth = cal.timeInMillis
-        val today = expenses.filter { it.date in startOfToday..endOfToday }.sumOf { it.amount }
-        val month = expenses.filter { it.date >= startOfMonth }.sumOf { it.amount }
+        val today = extraExpensesOnly.filter { it.date in startOfToday..endOfToday }.sumOf { it.amount }
+        val month = extraExpensesOnly.filter { it.date >= startOfMonth }.sumOf { it.amount }
         Pair(today, month)
     }
 
@@ -283,8 +296,9 @@ fun HomeScreen(
 
         // 4. Expense & Salary Overview Card in IQD
         item {
-            val totalIncome = preferences?.totalIncome ?: 0.0
-            val remainingSalary = totalIncome - monthExpensesTotal
+            val totalIncome = (preferences?.totalIncome ?: 0.0) + extraIncomesTotal
+            val grandTotalCommitmentsAndExpenses = totalBillsAmount + totalExtraExpensesAmount
+            val remainingSalary = totalIncome - grandTotalCommitmentsAndExpenses
             val hasSalary = totalIncome > 0.0
 
             Card(

@@ -55,6 +55,7 @@ class ReminderReceiver : BroadcastReceiver() {
                             )
                         }
                     } else if (billId != -1L) {
+                        ReminderScheduler.syncMonthlyCommitments(context, db.billDao())
                         val bill = db.billDao().getBillByIdSync(billId)
                         if (bill != null && !bill.isPaid) {
                             val formattedAmount = DecimalFormat("#,###").format(bill.amount)
@@ -73,8 +74,15 @@ class ReminderReceiver : BroadcastReceiver() {
                                     "Amount Due: $formattedAmount IQD • Due Date: $dueDateStr • Category: ${bill.category}"
                                 }
                             )
+                            // If recurring monthly commitment, schedule next month's reminder at the exact same specified time
+                            if (bill.dueMonth == 0 && bill.hasReminder && !bill.isInstallmentCompleted) {
+                                val nextMonthTime = ReminderScheduler.computeNextMonthReminderTime(bill)
+                                db.billDao().updateBill(bill.copy(reminderTime = nextMonthTime))
+                                ReminderScheduler.scheduleBillReminder(context, bill.id, bill.title, nextMonthTime)
+                            }
                         }
                     } else if (advanceBillId != -1L) {
+                        ReminderScheduler.syncMonthlyCommitments(context, db.billDao())
                         val bill = db.billDao().getBillByIdSync(advanceBillId)
                         if (bill != null && !bill.isPaid) {
                             val formattedAmount = DecimalFormat("#,###").format(bill.amount)
@@ -91,6 +99,7 @@ class ReminderReceiver : BroadcastReceiver() {
                             )
                         }
                     } else if (checkAllUpcomingBills) {
+                        ReminderScheduler.syncMonthlyCommitments(context, db.billDao())
                         val unpaidBills = db.billDao().getUnpaidBillsSync()
                         ReminderScheduler.checkAndNotifyUpcomingBillsNow(context, unpaidBills)
                         ReminderScheduler.schedulePeriodicUpcomingBillsCheck(context)

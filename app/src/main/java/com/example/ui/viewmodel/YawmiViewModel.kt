@@ -79,10 +79,23 @@ class YawmiViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
 
+            // Clean up any legacy auto-generated bill payment entries in expenses so commitments and expenses never double-count
+            try {
+                val existingExpenses = database.expenseDao().getAllExpenses().firstOrNull().orEmpty()
+                existingExpenses.filter { !it.isIncome && it.note.startsWith("سداد فاتورة:") }.forEach { legacyExp ->
+                    expenseRepository.deleteExpense(legacyExp)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+
             // Ensure all pending reminders (tasks, notes, bills) are actively scheduled in AlarmManager
+            // and automatically synchronize monthly commitments & installment history
             try {
                 val now = System.currentTimeMillis()
                 val appContext = getApplication<Application>()
+                ReminderScheduler.syncMonthlyCommitments(appContext, database.billDao())
+
                 database.taskDao().getPendingRemindersSync(now).forEach { task ->
                     task.reminderTime?.let { time ->
                         ReminderScheduler.scheduleReminder(appContext, task.id, task.title, time)
@@ -425,13 +438,22 @@ class YawmiViewModel(application: Application) : AndroidViewModel(application) {
         onReminderResult: (Boolean) -> Unit = {}
     ) {
         viewModelScope.launch {
-            val billId = if (bill.id == 0L) {
-                billRepository.insertBill(bill)
+            val normalizedBill = if (bill.isPaid && bill.paymentHistoryJson.isBlank()) {
+                bill.withRecordedPayment(
+                    monthKey = BillItem.currentMonthKey(),
+                    timestamp = bill.lastPaidAt ?: System.currentTimeMillis(),
+                    paymentAmount = bill.amount
+                )
             } else {
-                billRepository.updateBill(bill)
-                bill.id
+                bill
             }
-            val savedBill = bill.copy(id = billId)
+            val billId = if (normalizedBill.id == 0L) {
+                billRepository.insertBill(normalizedBill)
+            } else {
+                billRepository.updateBill(normalizedBill)
+                normalizedBill.id
+            }
+            val savedBill = normalizedBill.copy(id = billId)
 
             if (context != null) {
                 ReminderScheduler.scheduleAdvanceBillDueAlarms(context, savedBill)
@@ -443,18 +465,21 @@ class YawmiViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
 
-                if (bill.hasReminder && bill.reminderTime != null && !bill.isPaid) {
+                if (savedBill.hasReminder && savedBill.reminderTime != null && !savedBill.isPaid) {
                     val scheduled = ReminderScheduler.scheduleBillReminder(
                         context = context,
                         billId = billId,
-                        title = bill.title,
-                        reminderTimeMillis = bill.reminderTime
+                        title = savedBill.title,
+                        reminderTimeMillis = savedBill.reminderTime
                     )
                     onReminderResult(scheduled)
                 } else {
                     ReminderScheduler.cancelBillReminder(context, billId)
                     if (!savedBill.isPaid) {
                         ReminderScheduler.scheduleAdvanceBillDueAlarms(context, savedBill)
+                    } else if (savedBill.hasReminder && savedBill.dueMonth == 0 && !savedBill.isInstallmentCompleted) {
+                        val nextMonthTime = ReminderScheduler.computeNextMonthReminderTime(savedBill)
+                        ReminderScheduler.scheduleBillReminder(context, billId, savedBill.title, nextMonthTime)
                     }
                     onReminderResult(true)
                 }
@@ -476,25 +501,30 @@ class YawmiViewModel(application: Application) : AndroidViewModel(application) {
             if (context != null) {
                 ReminderScheduler.cancelBillReminder(context, bill.id)
             }
-            // 1. Mark bill as paid
-            billRepository.updateBill(bill.copy(isPaid = true))
-            // 2. Automatically log an expense transaction for this bill so it reflects in expenses
-            expenseRepository.insertExpense(
-                ExpenseItem(
-                    title = bill.title,
-                    amount = bill.amount,
-                    category = com.example.data.local.entity.ExpenseCategory.BILLS,
-                    date = System.currentTimeMillis(),
-                    note = "سداد فاتورة: ${bill.category}",
-                    isIncome = false
-                )
+            // Record this month's payment with exact timestamp & amount in the commitment's monthly history
+            var paidBill = bill.withRecordedPayment(
+                monthKey = BillItem.currentMonthKey(),
+                timestamp = System.currentTimeMillis(),
+                paymentAmount = bill.amount
             )
+            // Schedule next month's automatic reminder at the exact same specified time if recurring
+            if (context != null && paidBill.hasReminder && paidBill.dueMonth == 0 && !paidBill.isInstallmentCompleted) {
+                val nextMonthTime = ReminderScheduler.computeNextMonthReminderTime(paidBill)
+                paidBill = paidBill.copy(reminderTime = nextMonthTime)
+                ReminderScheduler.scheduleBillReminder(
+                    context = context,
+                    billId = paidBill.id,
+                    title = paidBill.title,
+                    reminderTimeMillis = nextMonthTime
+                )
+            }
+            billRepository.updateBill(paidBill)
         }
     }
 
     fun unpayBill(bill: BillItem, context: Context? = null) {
         viewModelScope.launch {
-            val unpaidBill = bill.copy(isPaid = false)
+            val unpaidBill = bill.withRemovedPaymentForMonth(BillItem.currentMonthKey())
             billRepository.updateBill(unpaidBill)
             if (context != null) {
                 ReminderScheduler.scheduleAdvanceBillDueAlarms(context, unpaidBill)
@@ -503,12 +533,12 @@ class YawmiViewModel(application: Application) : AndroidViewModel(application) {
                     bills = listOf(unpaidBill),
                     forceNotifyBillId = unpaidBill.id
                 )
-                if (bill.hasReminder && bill.reminderTime != null && bill.reminderTime > System.currentTimeMillis()) {
+                if (unpaidBill.hasReminder && unpaidBill.reminderTime != null && unpaidBill.reminderTime > System.currentTimeMillis()) {
                     ReminderScheduler.scheduleBillReminder(
                         context = context,
-                        billId = bill.id,
-                        title = bill.title,
-                        reminderTimeMillis = bill.reminderTime
+                        billId = unpaidBill.id,
+                        title = unpaidBill.title,
+                        reminderTimeMillis = unpaidBill.reminderTime
                     )
                 }
             }

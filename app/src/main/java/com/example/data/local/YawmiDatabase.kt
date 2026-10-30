@@ -23,7 +23,7 @@ import com.example.data.local.entity.TaskItem
         ExpenseItem::class,
         BillItem::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -45,6 +45,17 @@ abstract class YawmiDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE bills ADD COLUMN totalInstallmentAmount REAL NOT NULL DEFAULT 0.0")
+                db.execSQL("ALTER TABLE bills ADD COLUMN paidInstallmentAmount REAL NOT NULL DEFAULT 0.0")
+                db.execSQL("ALTER TABLE bills ADD COLUMN paidMonthsCount INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE bills ADD COLUMN lastPaidAt INTEGER")
+                db.execSQL("ALTER TABLE bills ADD COLUMN lastPaidMonthKey TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE bills ADD COLUMN paymentHistoryJson TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
         fun getInstance(context: Context): YawmiDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -52,7 +63,7 @@ abstract class YawmiDatabase : RoomDatabase() {
                     YawmiDatabase::class.java,
                     "yawmi_database"
                 )
-                    .addMigrations(MIGRATION_4_5)
+                    .addMigrations(MIGRATION_4_5, MIGRATION_5_6)
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance

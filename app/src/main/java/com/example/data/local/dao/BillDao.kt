@@ -14,6 +14,9 @@ interface BillDao {
     @Query("SELECT * FROM bills ORDER BY dueDayOfMonth ASC, id ASC")
     fun getAllBills(): Flow<List<BillItem>>
 
+    @Query("SELECT * FROM bills ORDER BY dueDayOfMonth ASC, id ASC")
+    suspend fun getAllBillsSync(): List<BillItem>
+
     @Query("SELECT * FROM bills WHERE id = :id LIMIT 1")
     suspend fun getBillByIdSync(id: Long): BillItem?
 
