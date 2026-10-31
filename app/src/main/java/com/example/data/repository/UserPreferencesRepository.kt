@@ -21,6 +21,7 @@ data class UserPreferences(
     val vibrateEnabled: Boolean = true,
     val basicSalary: Double = 0.0,
     val addedSalary: Double = 0.0,
+    val addedSalaryName: String = "",
     val previousMonthBalance: Double = 0.0,
     val salaryDayOfMonth: Int = 1
 ) {
@@ -48,6 +49,7 @@ class UserPreferencesRepository(private val context: Context) {
         val KEY_VIBRATE = booleanPreferencesKey("vibrate_enabled")
         val KEY_BASIC_SALARY = doublePreferencesKey("basic_salary")
         val KEY_ADDED_SALARY = doublePreferencesKey("added_salary")
+        val KEY_ADDED_SALARY_NAME = stringPreferencesKey("added_salary_name")
         val KEY_PREVIOUS_MONTH_BALANCE = doublePreferencesKey("previous_month_balance")
         val KEY_SALARY_DAY_OF_MONTH = androidx.datastore.preferences.core.intPreferencesKey("salary_day_of_month")
     }
@@ -61,6 +63,7 @@ class UserPreferencesRepository(private val context: Context) {
             vibrateEnabled = preferences[KEY_VIBRATE] ?: true,
             basicSalary = preferences[KEY_BASIC_SALARY] ?: 0.0,
             addedSalary = preferences[KEY_ADDED_SALARY] ?: 0.0,
+            addedSalaryName = preferences[KEY_ADDED_SALARY_NAME] ?: "",
             previousMonthBalance = preferences[KEY_PREVIOUS_MONTH_BALANCE] ?: 0.0,
             salaryDayOfMonth = preferences[KEY_SALARY_DAY_OF_MONTH] ?: 1
         )
@@ -105,6 +108,12 @@ class UserPreferencesRepository(private val context: Context) {
     suspend fun setAddedSalary(added: Double) {
         context.dataStore.edit { preferences ->
             preferences[KEY_ADDED_SALARY] = added
+        }
+    }
+
+    suspend fun setAddedSalaryName(name: String) {
+        context.dataStore.edit { preferences ->
+            preferences[KEY_ADDED_SALARY_NAME] = name
         }
     }
 

@@ -154,6 +154,7 @@ fun ExpensesScreen(
     preferences: UserPreferences,
     onUpdateBasicSalary: (Double) -> Unit,
     onUpdateAddedSalary: (Double) -> Unit,
+    onUpdateAddedSalaryName: (String) -> Unit = {},
     onUpdatePreviousMonthBalance: (Double) -> Unit = {},
     onUpdateSalaryDay: (Int) -> Unit = {},
     onSaveExpense: (ExpenseItem) -> Unit,
@@ -186,6 +187,7 @@ fun ExpensesScreen(
     var expenseToDelete by remember { mutableStateOf<ExpenseItem?>(null) }
     var showClearAllExpensesConfirm by remember { mutableStateOf(false) }
     var showClearAllIncomesConfirm by remember { mutableStateOf(false) }
+    var showDeleteAllAddedSalaryConfirm by remember { mutableStateOf(false) }
 
     var showAddBillDialog by remember { mutableStateOf(false) }
     var editingBill by remember { mutableStateOf<BillItem?>(null) }
@@ -195,6 +197,7 @@ fun ExpensesScreen(
     // Calculations
     val basicSalary = preferences.basicSalary
     val addedSalary = preferences.addedSalary
+    val addedSalaryName = preferences.addedSalaryName
     val previousBalance = preferences.previousMonthBalance
 
     // Expenses vs Income separation (excluding any legacy auto-logged bill payment entries so commitments are never double-counted)
@@ -206,6 +209,19 @@ fun ExpensesScreen(
 
     // Total Added Salary + External Works / Extra Incomes
     val effectiveAddedSalary = addedSalary + extraIncomesTotal
+    val effectiveAddedSalarySubtitle = remember(addedSalaryName, incomeTransactions, strings.addedSalaryDesc) {
+        val parts = mutableListOf<String>()
+        if (addedSalaryName.isNotBlank()) {
+            parts.add(addedSalaryName.trim())
+        }
+        incomeTransactions.forEach { tx ->
+            if (tx.title.isNotBlank() && !parts.contains(tx.title.trim())) {
+                parts.add(tx.title.trim())
+            }
+        }
+        if (parts.isNotEmpty()) parts.joinToString(" • ") else strings.addedSalaryDesc
+    }
+
     // Final Total Salary / Income (الراتب العام الأساسي + الإضافات من رواتب أو أعمال خارجية + الرصيد المرحّل)
     val totalIncome = basicSalary + effectiveAddedSalary + previousBalance
 
@@ -397,6 +413,7 @@ fun ExpensesScreen(
                     OverviewTabContent(
                         basicSalary = basicSalary,
                         addedSalary = effectiveAddedSalary,
+                        addedSalarySubtitle = effectiveAddedSalarySubtitle,
                         previousBalance = previousBalance,
                         totalIncome = totalIncome,
                         totalBillsAmount = totalBillsAmount,
@@ -416,16 +433,11 @@ fun ExpensesScreen(
                         onOpenSetNewSalary = { showSetNewSalaryDialog = true },
                         onOpenEditBasicSalary = { showEditBasicSalaryDialog = true },
                         onOpenEditAddedSalary = { showEditAddedSalaryDialog = true },
+                        onDeleteAddedSalary = {
+                            showDeleteAllAddedSalaryConfirm = true
+                        },
                         onOpenEditPreviousBalance = { showEditPreviousBalanceDialog = true },
                         onOpenEditSalaryDay = { showEditSalaryDayDialog = true },
-                        onOpenAddExpense = {
-                            editingExpense = null
-                            showAddExpenseDialog = true
-                        },
-                        onOpenAddIncome = {
-                            editingExpense = null
-                            showAddIncomeDialog = true
-                        },
                         onNavigateToBills = {
                             openRedExpensesInBillsTab = false
                             currentTab = FinanceTab.BILLS
@@ -566,14 +578,16 @@ fun ExpensesScreen(
         SetNewSalaryDialog(
             currentBasicSalary = basicSalary,
             currentAddedSalary = addedSalary,
+            currentAddedSalaryName = addedSalaryName,
             currentSalaryDay = preferences.salaryDayOfMonth,
             currency = strings.currencyUnit,
             strings = strings,
             isAr = isAr,
             onDismiss = { showSetNewSalaryDialog = false },
-            onConfirm = { newBasic, newAdded, newDay ->
+            onConfirm = { newBasic, newAdded, newAddedName, newDay ->
                 onUpdateBasicSalary(newBasic)
                 onUpdateAddedSalary(newAdded)
+                onUpdateAddedSalaryName(newAddedName)
                 onUpdateSalaryDay(newDay)
                 showSetNewSalaryDialog = false
             }
@@ -599,22 +613,54 @@ fun ExpensesScreen(
         )
     }
 
-    // 2. Added Salary Dialog
+    // 2. Added Salary Manager Dialog (تسمية وتعديل وحذف الراتب المضاف والمبالغ المضافة)
     if (showEditAddedSalaryDialog) {
-        SalaryAmountInputDialog(
-            title = strings.addedSalaryTitle,
-            subtitle = strings.addedSalaryDesc,
-            currentAmount = addedSalary,
+        AddedSalaryManagerDialog(
+            currentAddedSalary = addedSalary,
+            currentAddedSalaryName = addedSalaryName,
+            incomeTransactions = incomeTransactions,
             currency = strings.currencyUnit,
+            currencyFormatter = currencyFormatter,
             isAr = isAr,
-            saveLabel = strings.saveSalary,
-            cancelLabel = strings.btnCancel,
-            quickAmounts = listOf(50000L, 100000L, 150000L, 250000L, 500000L),
             onDismiss = { showEditAddedSalaryDialog = false },
-            onSave = { newAmount ->
+            onSaveDirectAddedSalary = { newAmount, newName ->
                 onUpdateAddedSalary(newAmount)
+                onUpdateAddedSalaryName(newName)
                 showEditAddedSalaryDialog = false
+            },
+            onDeleteAllAddedSalary = {
+                onUpdateAddedSalary(0.0)
+                onUpdateAddedSalaryName("")
+                onClearAllIncomes()
+                showEditAddedSalaryDialog = false
+            },
+            onEditIncomeTransaction = { tx ->
+                editingExpense = tx
+                showAddIncomeDialog = true
+            },
+            onDeleteIncomeTransaction = { tx ->
+                onDeleteExpense(tx)
+            },
+            onAddNewIncomeTransaction = {
+                editingExpense = null
+                showAddIncomeDialog = true
             }
+        )
+    }
+
+    // Confirm Delete All Added Salary from Card Trash Button
+    if (showDeleteAllAddedSalaryConfirm) {
+        ConfirmDeleteDialog(
+            title = if (isAr) "حذف الراتب المضاف" else "Delete Added Salary",
+            message = if (isAr) "هل أنت متأكد من حذف وتصفير الراتب المضاف وكافة المبالغ الإضافية المسجلة؟"
+            else "Are you sure you want to delete and reset the added salary and all extra income entries?",
+            onConfirm = {
+                onUpdateAddedSalary(0.0)
+                onUpdateAddedSalaryName("")
+                onClearAllIncomes()
+                showDeleteAllAddedSalaryConfirm = false
+            },
+            onDismiss = { showDeleteAllAddedSalaryConfirm = false }
         )
     }
 
@@ -770,6 +816,7 @@ fun ExpensesScreen(
 private fun OverviewTabContent(
     basicSalary: Double,
     addedSalary: Double,
+    addedSalarySubtitle: String,
     previousBalance: Double,
     totalIncome: Double,
     totalBillsAmount: Double,
@@ -789,10 +836,9 @@ private fun OverviewTabContent(
     onOpenSetNewSalary: () -> Unit,
     onOpenEditBasicSalary: () -> Unit,
     onOpenEditAddedSalary: () -> Unit,
+    onDeleteAddedSalary: () -> Unit,
     onOpenEditPreviousBalance: () -> Unit,
     onOpenEditSalaryDay: () -> Unit,
-    onOpenAddExpense: () -> Unit,
-    onOpenAddIncome: () -> Unit,
     onNavigateToBills: () -> Unit,
     onOpenRedExpensesWindow: () -> Unit,
     onPayBill: (BillItem) -> Unit,
@@ -915,7 +961,9 @@ private fun OverviewTabContent(
                                     .background(MaterialTheme.colorScheme.outlineVariant)
                             )
 
-                            Column {
+                            Column(
+                                modifier = Modifier.clickable { onOpenEditAddedSalary() }
+                            ) {
                                 Text(
                                     text = if (isAr) "المضاف / خارجي:" else "Added / External:",
                                     fontSize = 10.5.sp,
@@ -1076,126 +1124,61 @@ private fun OverviewTabContent(
             }
         }
 
-        // 3. إجراءات سريعة (Quick Actions: - مصروف | + إضافة مبلغ جديد) (Screenshot 2)
+        // 3. زر الوصول السريع لنافذة المصروف داخل الالتزامات (بدون أزرار الوضع السريع)
         item {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                Text(
-                    text = strings.quickActions,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Spacer(modifier = Modifier.height(8.dp))
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = Color(0xFFDC2626).copy(alpha = 0.12f),
+                border = BorderStroke(1.dp, Color(0xFFDC2626).copy(alpha = 0.45f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable { onOpenRedExpensesWindow() }
+                    .testTag("open_red_expenses_in_commitments_btn")
+            ) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    // زر أحمر: - مصروف
-                    Button(
-                        onClick = onOpenAddExpense,
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(48.dp),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626))
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Remove,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = strings.btnLogExpense,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White
-                        )
-                    }
-
-                    // زر أخضر: + إضافة مبلغ جديد
-                    Button(
-                        onClick = onOpenAddIncome,
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(48.dp),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981))
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Add,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = strings.btnAddIncome,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                // زر الوصول السريع لنافذة المصروفات (الزر الأحمر) داخل الالتزامات للتعديل والحذف
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = Color(0xFFDC2626).copy(alpha = 0.12f),
-                    border = BorderStroke(1.dp, Color(0xFFDC2626).copy(alpha = 0.45f)),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .clickable { onOpenRedExpensesWindow() }
-                        .testTag("open_red_expenses_in_commitments_btn")
+                        .padding(horizontal = 12.dp, vertical = 9.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 9.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(
-                                modifier = Modifier
-                                    .size(26.dp)
-                                    .clip(CircleShape)
-                                    .background(Color(0xFFDC2626)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.ReceiptLong,
-                                    contentDescription = null,
-                                    tint = Color.White,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Column {
-                                Text(
-                                    text = if (isAr) "نافذة المصروف في الالتزامات" else "Expenses Window in Commitments",
-                                    fontSize = 11.5.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color(0xFFEF4444)
-                                )
-                                Text(
-                                    text = if (isAr) "اضغط هنا لتعديل أو حذف أي مصروف أو مسح سجل المصروف" else "Tap to edit, delete, or clear expense log",
-                                    fontSize = 10.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(26.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFFDC2626)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ReceiptLong,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(14.dp)
+                            )
                         }
-                        Icon(
-                            imageVector = Icons.Default.ArrowBackIosNew,
-                            contentDescription = null,
-                            tint = Color(0xFFEF4444),
-                            modifier = Modifier.size(14.dp)
-                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column {
+                            Text(
+                                text = if (isAr) "نافذة المصروف في الالتزامات" else "Expenses Window in Commitments",
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFEF4444)
+                            )
+                            Text(
+                                text = if (isAr) "اضغط هنا لإضافة أو تعديل أو حذف أي مصروف" else "Tap to add, edit, or delete expenses",
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
+                    Icon(
+                        imageVector = Icons.Default.ArrowBackIosNew,
+                        contentDescription = null,
+                        tint = Color(0xFFEF4444),
+                        modifier = Modifier.size(14.dp)
+                    )
                 }
             }
         }
@@ -1220,10 +1203,10 @@ private fun OverviewTabContent(
                     onClick = onOpenEditBasicSalary
                 )
 
-                // Card B: بطاقة الراتب المضاف (Title on TOP, Price BELOW IT!)
+                // Card B: بطاقة الراتب المضاف (مع إمكانية التسمية والتعديل والحذف المباشر)
                 SalarySpecCard(
                     title = strings.addedSalaryTitle,
-                    subtitle = strings.addedSalaryDesc,
+                    subtitle = addedSalarySubtitle,
                     amount = addedSalary,
                     currency = strings.currencyUnit,
                     icon = Icons.Default.TrendingUp,
@@ -1231,7 +1214,8 @@ private fun OverviewTabContent(
                     currencyFormatter = currencyFormatter,
                     isAr = isAr,
                     modifier = Modifier.weight(1f),
-                    onClick = onOpenEditAddedSalary
+                    onClick = onOpenEditAddedSalary,
+                    onDelete = if (addedSalary > 0.0) onDeleteAddedSalary else null
                 )
             }
         }
@@ -3585,7 +3569,8 @@ private fun SalarySpecCard(
     currencyFormatter: DecimalFormat,
     isAr: Boolean,
     modifier: Modifier = Modifier,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onDelete: (() -> Unit)? = null
 ) {
     Card(
         modifier = modifier.clickable { onClick() },
@@ -3599,7 +3584,7 @@ private fun SalarySpecCard(
                 .fillMaxWidth()
                 .padding(12.dp)
         ) {
-            // Header Row: Icon + Edit Button
+            // Header Row: Icon + Edit & Delete Buttons
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -3615,22 +3600,56 @@ private fun SalarySpecCard(
                     Icon(imageVector = icon, contentDescription = null, tint = themeColor, modifier = Modifier.size(17.dp))
                 }
 
-                Surface(
-                    shape = RoundedCornerShape(6.dp),
-                    color = themeColor.copy(alpha = 0.15f)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = themeColor.copy(alpha = 0.15f)
                     ) {
-                        Icon(imageVector = Icons.Default.Edit, contentDescription = null, tint = themeColor, modifier = Modifier.size(10.dp))
-                        Spacer(modifier = Modifier.width(3.dp))
-                        Text(
-                            text = if (isAr) "تحديد" else "Set",
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = themeColor
-                        )
+                        Row(
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(imageVector = Icons.Default.Edit, contentDescription = null, tint = themeColor, modifier = Modifier.size(10.dp))
+                            Spacer(modifier = Modifier.width(3.dp))
+                            Text(
+                                text = if (isAr) (if (amount > 0.0) "تعديل" else "تحديد") else "Edit",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = themeColor
+                            )
+                        }
+                    }
+
+                    if (onDelete != null && amount > 0.0) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = Color(0xFFEF4444).copy(alpha = 0.16f),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable { onDelete() }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Delete,
+                                    contentDescription = if (isAr) "حذف" else "Delete",
+                                    tint = Color(0xFFEF4444),
+                                    modifier = Modifier.size(11.dp)
+                                )
+                                Spacer(modifier = Modifier.width(2.dp))
+                                Text(
+                                    text = if (isAr) "حذف" else "Del",
+                                    fontSize = 9.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFFEF4444)
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -3649,8 +3668,9 @@ private fun SalarySpecCard(
 
             Text(
                 text = subtitle,
-                fontSize = 10.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 10.5.sp,
+                fontWeight = if (amount > 0.0) FontWeight.SemiBold else FontWeight.Normal,
+                color = if (amount > 0.0) themeColor.copy(alpha = 0.9f) else MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -3745,6 +3765,18 @@ private fun SalaryAmountInputDialog(
                     visualTransformation = ThousandsSeparatorVisualTransformation(),
                     label = { Text(if (isAr) "المبلغ ($currency)" else "Amount in $currency", fontSize = 11.sp) },
                     placeholder = { Text("مثال: 800000", fontSize = 12.sp) },
+                    trailingIcon = if (amountText.isNotEmpty()) {
+                        {
+                            IconButton(onClick = { amountText = "" }) {
+                                Icon(
+                                    imageVector = Icons.Default.Clear,
+                                    contentDescription = if (isAr) "مسح" else "Clear",
+                                    tint = Color(0xFFEF4444),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    } else null,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     singleLine = true,
                     textStyle = MaterialTheme.typography.titleMedium.copy(
@@ -3825,6 +3857,30 @@ private fun SalaryAmountInputDialog(
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                         }
+                    }
+                }
+
+                // Direct Delete / Zero Button when there is an existing amount
+                if (currentAmount > 0.0) {
+                    OutlinedButton(
+                        onClick = { onSave(0.0) },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.6f))
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = null,
+                            tint = Color(0xFFEF4444),
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (isAr) "حذف / تصفير المبلغ" else "Delete / Reset Amount",
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFEF4444)
+                        )
                     }
                 }
             }
@@ -5081,15 +5137,17 @@ private fun BillInputDialog(
 private fun SetNewSalaryDialog(
     currentBasicSalary: Double,
     currentAddedSalary: Double,
+    currentAddedSalaryName: String,
     currentSalaryDay: Int,
     currency: String,
     strings: AppStrings,
     isAr: Boolean,
     onDismiss: () -> Unit,
-    onConfirm: (newBasic: Double, newAdded: Double, newDay: Int) -> Unit
+    onConfirm: (newBasic: Double, newAdded: Double, newAddedName: String, newDay: Int) -> Unit
 ) {
     var basicText by remember { mutableStateOf(if (currentBasicSalary > 0) currentBasicSalary.toLong().toString() else "") }
     var addedText by remember { mutableStateOf(if (currentAddedSalary > 0) currentAddedSalary.toLong().toString() else "") }
+    var addedNameText by remember { mutableStateOf(currentAddedSalaryName) }
     var selectedDay by remember { mutableIntStateOf(currentSalaryDay.coerceIn(1, 31)) }
 
     val parsedBasic = basicText.toLongOrNull() ?: 0L
@@ -5123,7 +5181,7 @@ private fun SetNewSalaryDialog(
                         text = if (isAr) "تحديد الراتب الجديد" else "Set New Salary",
                         fontSize = 17.sp,
                         fontWeight = FontWeight.Bold,
-                        color = Color.White
+                        color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
                         text = if (isAr) "حدد الراتب الأساسي والمخصصات وموعد الصرف" else "Specify base, bonus & deposit day",
@@ -5146,7 +5204,7 @@ private fun SetNewSalaryDialog(
                         text = if (isAr) "1. الراتب الأساسي الجديد ($currency)" else "1. New Base Salary ($currency)",
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
-                        color = Color.White
+                        color = MaterialTheme.colorScheme.onSurface
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     OutlinedTextField(
@@ -5154,6 +5212,18 @@ private fun SetNewSalaryDialog(
                         onValueChange = { input -> basicText = input.filter { it.isDigit() } },
                         visualTransformation = ThousandsSeparatorVisualTransformation(),
                         placeholder = { Text(if (isAr) "مثال: 1,000,000" else "e.g. 1,000,000", fontSize = 13.sp) },
+                        trailingIcon = if (basicText.isNotEmpty()) {
+                            {
+                                IconButton(onClick = { basicText = "" }) {
+                                    Icon(
+                                        imageVector = Icons.Default.Clear,
+                                        contentDescription = null,
+                                        tint = Color(0xFFEF4444),
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        } else null,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         singleLine = true,
                         shape = RoundedCornerShape(14.dp),
@@ -5194,27 +5264,86 @@ private fun SetNewSalaryDialog(
                     }
                 }
 
-                // 2. حقل الراتب المضاف / الحوافز والمخصصات
-                Column {
-                    Text(
-                        text = if (isAr) "2. الراتب المضاف / حوافز إضافية ($currency)" else "2. Added / Bonus Salary ($currency)",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White
+                // 2. حقل اسم ومبلغ الراتب المضاف / الحوافز والمخصصات
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (isAr) "2. الراتب المضاف (الاسم والمبلغ)" else "2. Added Salary (Name & Amount)",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        if (addedText.isNotEmpty() || addedNameText.isNotEmpty()) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = Color(0xFFEF4444).copy(alpha = 0.15f),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable {
+                                        addedText = ""
+                                        addedNameText = ""
+                                    }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Delete,
+                                        contentDescription = null,
+                                        tint = Color(0xFFEF4444),
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(3.dp))
+                                    Text(
+                                        text = if (isAr) "حذف المضاف" else "Clear Added",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFFEF4444)
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    OutlinedTextField(
+                        value = addedNameText,
+                        onValueChange = { addedNameText = it },
+                        label = { Text(if (isAr) "اسم الراتب المضاف (اختياري)" else "Added Salary Name", fontSize = 11.sp) },
+                        placeholder = { Text(if (isAr) "مثال: حوافز، مكافأة، عمل إضافي" else "e.g. Bonus, Overtime", fontSize = 12.sp) },
+                        singleLine = true,
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.fillMaxWidth()
                     )
-                    Spacer(modifier = Modifier.height(4.dp))
+
                     OutlinedTextField(
                         value = addedText,
                         onValueChange = { input -> addedText = input.filter { it.isDigit() } },
                         visualTransformation = ThousandsSeparatorVisualTransformation(),
-                        placeholder = { Text(if (isAr) "اختياري (أصفار أو مخصصات)" else "Optional (e.g. 150,000)", fontSize = 13.sp) },
+                        label = { Text(if (isAr) "مبلغ الراتب المضاف ($currency)" else "Added Amount ($currency)", fontSize = 11.sp) },
+                        placeholder = { Text(if (isAr) "اختياري (مثال: 250,000)" else "Optional (e.g. 250,000)", fontSize = 13.sp) },
+                        trailingIcon = if (addedText.isNotEmpty()) {
+                            {
+                                IconButton(onClick = { addedText = "" }) {
+                                    Icon(
+                                        imageVector = Icons.Default.Clear,
+                                        contentDescription = null,
+                                        tint = Color(0xFFEF4444),
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        } else null,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         singleLine = true,
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
                     if (parsedAdded > 0) {
-                        Spacer(modifier = Modifier.height(3.dp))
                         Text(
                             text = CurrencyFormatterUtils.toArabicDenomination(parsedAdded),
                             fontSize = 11.sp,
@@ -5230,7 +5359,7 @@ private fun SetNewSalaryDialog(
                         text = if (isAr) "3. يوم استلام الراتب من كل شهر" else "3. Salary Reception Day of Month",
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
-                        color = Color.White
+                        color = MaterialTheme.colorScheme.onSurface
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Row(
@@ -5297,7 +5426,7 @@ private fun SetNewSalaryDialog(
         confirmButton = {
             Button(
                 onClick = {
-                    onConfirm(parsedBasic.toDouble(), parsedAdded.toDouble(), selectedDay)
+                    onConfirm(parsedBasic.toDouble(), parsedAdded.toDouble(), addedNameText.trim(), selectedDay)
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = CyanSkyPrimary, contentColor = Color(0xFF0F172A)),
                 shape = RoundedCornerShape(18.dp)
@@ -5319,3 +5448,497 @@ private fun SetNewSalaryDialog(
         }
     )
 }
+
+// =================================================================
+// DEDICATED ADDED SALARY MANAGER DIALOG
+// (تسمية وتعديل وحذف الراتب المضاف والمبالغ الإضافية المسجلة)
+// =================================================================
+@Composable
+private fun AddedSalaryManagerDialog(
+    currentAddedSalary: Double,
+    currentAddedSalaryName: String,
+    incomeTransactions: List<ExpenseItem>,
+    currency: String,
+    currencyFormatter: DecimalFormat,
+    isAr: Boolean,
+    onDismiss: () -> Unit,
+    onSaveDirectAddedSalary: (newAmount: Double, newName: String) -> Unit,
+    onDeleteAllAddedSalary: () -> Unit,
+    onEditIncomeTransaction: (ExpenseItem) -> Unit,
+    onDeleteIncomeTransaction: (ExpenseItem) -> Unit,
+    onAddNewIncomeTransaction: () -> Unit
+) {
+    var nameText by remember(currentAddedSalaryName) { mutableStateOf(currentAddedSalaryName) }
+    var amountText by remember(currentAddedSalary) {
+        mutableStateOf(if (currentAddedSalary > 0) currentAddedSalary.toLong().toString() else "")
+    }
+    val parsedAmount = amountText.toLongOrNull() ?: 0L
+    val recordedIncomesTotal = remember(incomeTransactions) { incomeTransactions.sumOf { it.amount } }
+    val grandAddedTotal = parsedAmount.toDouble() + recordedIncomesTotal
+
+    val suggestedNames = if (isAr) {
+        listOf("حوافز", "مكافأة", "عمل إضافي", "أرباح خارجية", "فروقات راتب", "مخصصات")
+    } else {
+        listOf("Bonus", "Overtime", "Freelance", "Allowance", "Commission")
+    }
+    val quickAmounts = listOf(50000L, 100000L, 150000L, 250000L, 500000L, 1000000L)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = MaterialTheme.colorScheme.surface,
+        title = {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                    Box(
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Color(0xFF10B981).copy(alpha = 0.16f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.TrendingUp,
+                            contentDescription = null,
+                            tint = Color(0xFF10B981),
+                            modifier = Modifier.size(19.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Column {
+                        Text(
+                            text = if (isAr) "إدارة الراتب المضاف / الإضافي" else "Manage Added Salary",
+                            fontSize = 15.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = if (isAr) "تسمية أو تعديل أو حذف أي مبلغ مضاف للراتب" else "Name, edit, or delete added salary",
+                            fontSize = 10.5.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(11.dp)
+            ) {
+                // إجمالي الراتب المضاف الكلي (المباشر + المسجل)
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color(0xFF10B981).copy(alpha = 0.12f),
+                    border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.4f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 9.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(
+                                text = if (isAr) "إجمالي المبالغ المضافة حالياً:" else "Total Added Salary:",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = "${currencyFormatter.format(grandAddedTotal)} $currency",
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Black,
+                                color = Color(0xFF10B981)
+                            )
+                        }
+
+                        if (currentAddedSalary > 0.0 || incomeTransactions.isNotEmpty() || parsedAmount > 0L) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = Color(0xFFEF4444).copy(alpha = 0.16f),
+                                border = BorderStroke(0.8.dp, Color(0xFFEF4444).copy(alpha = 0.5f)),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { onDeleteAllAddedSalary() }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Delete,
+                                        contentDescription = null,
+                                        tint = Color(0xFFEF4444),
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = if (isAr) "حذف الكل" else "Delete All",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFFEF4444)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 1. حقل تسمية الراتب المضاف
+                Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text(
+                        text = if (isAr) "اسم / عنوان الراتب المضاف:" else "Added Salary Name / Title:",
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    OutlinedTextField(
+                        value = nameText,
+                        onValueChange = { nameText = it },
+                        label = { Text(if (isAr) "تسمية الراتب المضاف" else "Title / Source", fontSize = 11.sp) },
+                        placeholder = {
+                            Text(
+                                if (isAr) "مثال: حوافز، مكافأة، عمل إضافي..." else "e.g. Bonus, Overtime...",
+                                fontSize = 12.sp
+                            )
+                        },
+                        trailingIcon = if (nameText.isNotEmpty()) {
+                            {
+                                IconButton(onClick = { nameText = "" }) {
+                                    Icon(
+                                        imageVector = Icons.Default.Clear,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+                        } else null,
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    // تسميات سريعة مقترحة
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        suggestedNames.forEach { suggestion ->
+                            val isSelected = nameText.trim() == suggestion
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = if (isSelected) Color(0xFF10B981).copy(alpha = 0.22f)
+                                else MaterialTheme.colorScheme.surfaceVariant,
+                                border = if (isSelected) BorderStroke(1.dp, Color(0xFF10B981)) else null,
+                                modifier = Modifier.clickable { nameText = suggestion }
+                            ) {
+                                Text(
+                                    text = suggestion,
+                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
+                                    fontSize = 10.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isSelected) Color(0xFF10B981) else MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // 2. حقل مبلغ الراتب المضاف المباشر
+                Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (isAr) "مبلغ الراتب المضاف ($currency):" else "Added Salary Amount ($currency):",
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        if (amountText.isNotEmpty() && parsedAmount > 0L) {
+                            Text(
+                                text = if (isAr) "تصفير المبلغ ✕" else "Reset ✕",
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFEF4444),
+                                modifier = Modifier.clickable { amountText = "" }
+                            )
+                        }
+                    }
+
+                    OutlinedTextField(
+                        value = amountText,
+                        onValueChange = { input -> amountText = input.filter { it.isDigit() } },
+                        visualTransformation = ThousandsSeparatorVisualTransformation(),
+                        label = { Text(if (isAr) "المبلغ ($currency)" else "Amount ($currency)", fontSize = 11.sp) },
+                        placeholder = { Text("0", fontSize = 12.sp) },
+                        trailingIcon = if (amountText.isNotEmpty()) {
+                            {
+                                IconButton(onClick = { amountText = "" }) {
+                                    Icon(
+                                        imageVector = Icons.Default.Clear,
+                                        contentDescription = null,
+                                        tint = Color(0xFFEF4444),
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        } else null,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        textStyle = MaterialTheme.typography.titleMedium.copy(
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    if (parsedAmount > 0) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "${CurrencyFormatterUtils.format(parsedAmount)} $currency",
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    text = CurrencyFormatterUtils.toArabicDenomination(parsedAmount),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = Color(0xFF10B981)
+                                )
+                            }
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        quickAmounts.forEach { amt ->
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                modifier = Modifier.clickable { amountText = amt.toString() }
+                            ) {
+                                Text(
+                                    text = CurrencyFormatterUtils.format(amt),
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    fontSize = 10.5.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // 3. قائمة المبالغ الإضافية المسجلة (لتسميتها أو تعديلها أو حذفها بسهولة)
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (isAr) "المبالغ الإضافية المسجلة (${incomeTransactions.size}):"
+                            else "Recorded Extra Amounts (${incomeTransactions.size}):",
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color(0xFF10B981).copy(alpha = 0.16f),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { onAddNewIncomeTransaction() }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Add,
+                                    contentDescription = null,
+                                    tint = Color(0xFF10B981),
+                                    modifier = Modifier.size(13.dp)
+                                )
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text(
+                                    text = if (isAr) "إضافة مبلغ باسم جديد" else "Add Named Amount",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF10B981)
+                                )
+                            }
+                        }
+                    }
+
+                    if (incomeTransactions.isNotEmpty()) {
+                        incomeTransactions.forEach { tx ->
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                                border = BorderStroke(0.8.dp, Color(0xFF10B981).copy(alpha = 0.35f)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = tx.title.ifBlank { if (isAr) "مبلغ إضافي" else "Extra Income" },
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Text(
+                                            text = "+${currencyFormatter.format(tx.amount)} $currency",
+                                            fontSize = 12.5.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = Color(0xFF10B981)
+                                        )
+                                    }
+
+                                    Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                                        // زر تعديل الاسم والمبلغ
+                                        Surface(
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f),
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .clickable { onEditIncomeTransaction(tx) }
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Edit,
+                                                    contentDescription = null,
+                                                    tint = MaterialTheme.colorScheme.primary,
+                                                    modifier = Modifier.size(12.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(3.dp))
+                                                Text(
+                                                    text = if (isAr) "تعديل/تسمية" else "Edit",
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.primary
+                                                )
+                                            }
+                                        }
+
+                                        // زر حذف المبلغ الإضافي
+                                        Surface(
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = Color(0xFFEF4444).copy(alpha = 0.16f),
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .clickable { onDeleteIncomeTransaction(tx) }
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Delete,
+                                                    contentDescription = null,
+                                                    tint = Color(0xFFEF4444),
+                                                    modifier = Modifier.size(12.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(3.dp))
+                                                Text(
+                                                    text = if (isAr) "حذف" else "Delete",
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = Color(0xFFEF4444)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 4. زر حذف الراتب المضاف بالكامل
+                if (currentAddedSalary > 0.0 || incomeTransactions.isNotEmpty()) {
+                    OutlinedButton(
+                        onClick = onDeleteAllAddedSalary,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.65f))
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = null,
+                            tint = Color(0xFFEF4444),
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (isAr) "حذف الراتب المضاف وكافة الإضافات نهائياً" else "Delete All Added Salary & Incomes",
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFEF4444)
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val cleanName = if (parsedAmount == 0L && incomeTransactions.isEmpty()) "" else nameText.trim()
+                    onSaveDirectAddedSalary(parsedAmount.toDouble(), cleanName)
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981))
+            ) {
+                Text(
+                    text = if (isAr) "حفظ التعديلات ✓" else "Save Changes ✓",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(text = if (isAr) "إلغاء" else "Cancel", fontSize = 12.sp)
+            }
+        }
+    )
+}
+

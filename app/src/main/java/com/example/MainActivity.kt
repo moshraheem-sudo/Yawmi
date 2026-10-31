@@ -356,6 +356,9 @@ fun YawmiMainApp(
                         onUpdateAddedSalary = { added ->
                             viewModel.setAddedSalary(added)
                         },
+                        onUpdateAddedSalaryName = { name ->
+                            viewModel.setAddedSalaryName(name)
+                        },
                         onUpdatePreviousMonthBalance = { balance ->
                             viewModel.setPreviousMonthBalance(balance)
                         },

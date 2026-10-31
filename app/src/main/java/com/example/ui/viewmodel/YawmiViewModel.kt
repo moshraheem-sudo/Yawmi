@@ -420,6 +420,12 @@ class YawmiViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun setAddedSalaryName(name: String) {
+        viewModelScope.launch {
+            preferencesRepository.setAddedSalaryName(name)
+        }
+    }
+
     fun setPreviousMonthBalance(balance: Double) {
         viewModelScope.launch {
             preferencesRepository.setPreviousMonthBalance(balance)

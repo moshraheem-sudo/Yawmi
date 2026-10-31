@@ -540,7 +540,7 @@ object ArabicStrings : AppStrings {
     override val aboutSection: String = "حول التطبيق"
     override val developerCredit: String = "تصميم وتطوير:"
     override val developerName: String = "م. محمد شهيد العاجيبي\n(Eng. Mohammed Shaheed Al-A'ajibi)"
-    override val appVersion: String = "الإصدار 2.0.0 (نسخة أصلية تعمل بدون إنترنت)"
+    override val appVersion: String = "الإصدار 2.10.0 (نسخة أصلية تعمل بدون إنترنت)"
     override val offlineSecurityBadge: String = "التطبيق يعمل محلياً 100% دون خوادم لضمان خصوصيتك الكاملة"
 
     override val btnSave: String = "حفظ"
@@ -815,7 +815,7 @@ object EnglishStrings : AppStrings {
     override val aboutSection: String = "About App"
     override val developerCredit: String = "Designed and developed by:"
     override val developerName: String = "Eng. Mohammed Shaheed Al-A'ajibi\n(م. محمد شهيد العاجيبي)"
-    override val appVersion: String = "Version 2.0.0 (Offline Native Edition)"
+    override val appVersion: String = "Version 2.10.0 (Offline Native Edition)"
     override val offlineSecurityBadge: String = "100% Offline & Private on device without external servers"
 
     override val btnSave: String = "Save"
